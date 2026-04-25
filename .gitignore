@@ -55,3 +55,8 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# TeleTasks local overrides (never commit secrets / personal tasks)
+appsettings.Development.json
+appsettings.Local.json
+tasks.local.json
