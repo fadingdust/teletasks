@@ -8,6 +8,12 @@
     <AssemblyName>TeleTasks</AssemblyName>
     <UserSecretsId>teletasks-local-dev</UserSecretsId>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      RollForward=Major lets a net8.0-built binary run on a machine that only
+      has a higher major (e.g. net10) installed. Use LatestMajor to *always*
+      pick the highest installed major even when net8 is present.
+    -->
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
