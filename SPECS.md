@@ -90,21 +90,31 @@ JSON-Schema-constrained output.
 
 ## In flight (open feature branches)
 
-### `claude/output-spec-promotion`
+### `claude/output-runtime`
 
-Output-spec promotion + globbing + sidecars. Documented in
-[cookbook](docs/cookbook.md) and [discovery](docs/discovery.md), but
-not yet merged.
+Project-type-agnostic runtime primitives carved out of the original
+output-spec-promotion branch. Lands first; long-running and
+output-spec-promotion both build on it.
+
+| Feature | Notes |
+|---|---|
+| `PathGlob` | `*` and `?` expansion in `Images.directory`, `Image.path`, `File.path`, `LogTail.path`. Picks freshest match by mtime. |
+| Multi-pass parameter substitution | `output_dir.default = "./results/{lora}/output"` resolves both layers when something references `{output_dir}`. Caps at 5 passes for cycle protection. |
+| Sidecar metadata + auto-diff captions | `captionFrom: { sidecar: ".json", mode: "auto-diff" }`. Top-level scalar fields constant across the batch go to a header message; per-image captions show only what varies. |
+| `siblings: [".json"]` | Send paired files as Telegram documents alongside each image. |
+| `/results <task>` + `_show_results` | Read a task's current output state without running its command. NL routing via the virtual matcher route. |
+| `TaskExecutor.EvaluateOutputAsync` | Shared "evaluate output spec without running command" helper — used by `/results` here and by `/job N` when long-running merges. |
+
+### `claude/output-spec-promotion` (rebases on output-runtime)
+
+Discovery-time heuristics that produce useful output specs automatically.
+After `output-runtime` lands, this branch shrinks to just the discovery
+work — no runtime changes.
 
 | Feature | Notes |
 |---|---|
 | `OutputSpecPromoter` | Auto-rewrite `Text` output to `Images` / `LogTail` / `File` based on parameter names (`output_dir`, `log_file`, etc.). Smart-glob detection for nested image dirs (`results/*/output`). |
-| `PathGlob` | `*` and `?` expansion in `Images.directory`, `Image.path`, `File.path`, `LogTail.path`. Picks freshest match by mtime. |
-| Sidecar metadata + auto-diff captions | `captionFrom: { sidecar: ".json", mode: "auto-diff" }`. Top-level scalar fields constant across the batch go to a header message; per-image captions show only what varies. |
-| `siblings: [".json"]` | Send paired files as Telegram documents alongside each image. |
-| `/latest <task>` + `_show_latest_output` | Read a task's current output state without running its command. NL routing via the virtual matcher route. |
 | `ShellWrapperResolver` | sh that wraps `python <file>.py` inherits the python's promoted output spec. Copies parameters the spec templates against (`{output_dir}`, `{lora}`) so substitution works on the shell side. |
-| Multi-pass parameter substitution | `output_dir.default = "./results/{lora}/output"` resolves both layers when something references `{output_dir}`. Caps at 5 passes for cycle protection. |
 | Verbose discover logs | Each pipeline pass logs why each candidate was promoted / skipped / matched. |
 
 ### `claude/long-running-jobs`
@@ -159,7 +169,7 @@ output structure stable.
 When the catalog has only one or two real tasks, a constrained model
 will pick whichever fits closest, even for meta questions. Adding
 explicit virtual routes (`_show_tasks`, `_show_help`, `_show_jobs`,
-`_show_latest_output`) gives the model somewhere to route those
+`_show_results`) gives the model somewhere to route those
 queries gracefully.
 
 ### Single user config dir for everything

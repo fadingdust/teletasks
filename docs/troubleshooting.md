@@ -136,7 +136,7 @@ toward the right virtual route.
 For "show me the output of X" specifically, use the explicit form:
 
 ```
-/latest py_render
+/results py_render
 ```
 
 …which bypasses the matcher entirely. Bot looks up the task by name,
@@ -268,7 +268,7 @@ Two possibilities:
 | Why didn't a sh inherit a py? | Look for `# wrapper: <name>: ...` |
 | Which Ollama model is being used? | `# llm: model=...` (during `discover --llm`) or bot startup log |
 | Did the matcher pick what I think? | `/dry <natural-language request>` |
-| Show me a task's output without running? | `/latest <task-name>` |
+| Show me a task's output without running? | `/results <task-name>` |
 | What's running? | `/jobs` |
 | Status of job N? | `/job N` |
 | Stop job N? | `/stop N` |

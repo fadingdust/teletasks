@@ -23,6 +23,45 @@ public sealed class TaskExecutor
         _logger = logger;
     }
 
+    /// <summary>
+    /// Evaluate a task's output spec against the current state of disk WITHOUT
+    /// running its command. For Images / File / LogTail outputs this just reads
+    /// what's already there. For Text outputs there's no cached state, so the
+    /// returned result is empty (caller should tell the user to run the task).
+    ///
+    /// Used by /results to read a task's latest produced output, and by
+    /// /job N (long-running branch) to refresh the artifacts mid-run.
+    /// </summary>
+    public async Task<TaskExecutionResult> EvaluateOutputAsync(
+        TaskDefinition task,
+        IReadOnlyDictionary<string, object?>? parameters,
+        CancellationToken cancellationToken)
+    {
+        var resolved = ApplyDefaults(task, parameters ?? new Dictionary<string, object?>());
+        var result = new TaskExecutionResult { Success = true };
+        await _output.CollectAsync(task, resolved, string.Empty, string.Empty, result, cancellationToken);
+        return result;
+    }
+
+    private static Dictionary<string, object?> ApplyDefaults(
+        TaskDefinition task,
+        IReadOnlyDictionary<string, object?> supplied)
+    {
+        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in task.Parameters)
+        {
+            if (supplied.TryGetValue(p.Name, out var v) && v is not null)
+            {
+                result[p.Name] = v;
+            }
+            else if (p.Default is not null)
+            {
+                result[p.Name] = p.Default;
+            }
+        }
+        return result;
+    }
+
     public async Task<TaskExecutionResult> ExecuteAsync(
         TaskDefinition task,
         IReadOnlyDictionary<string, object?> parameters,

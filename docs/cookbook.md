@@ -347,7 +347,7 @@ in place via the `source` field rather than appending duplicates.
 Two ways to evaluate a task's output spec without triggering its command:
 
 ```
-/latest render_loop
+/results render_loop
 ```
 
 …or in natural language: "latest output for render_loop", "show me my

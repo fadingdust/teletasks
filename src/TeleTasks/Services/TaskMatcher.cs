@@ -10,20 +10,24 @@ public sealed class TaskMatcher
 {
     public const string ShowTasksRoute = "_show_tasks";
     public const string ShowHelpRoute = "_show_help";
+    public const string ShowResultsRoute = "_show_results";
 
     private const string SystemPrompt = """
 You are a strict request router for a personal Linux assistant bot.
 
 Decide where to route the user's message:
 
-  • A REAL task name from the catalog — only when the user is clearly asking to
-    perform an action that one task explicitly does. Extract parameters from
-    the message into the "parameters" object.
-  • "_show_tasks" — when the user is asking what the bot can do, what tasks
-    exist, what's available, etc. (e.g. "What tasks are available?",
-    "list commands", "what can you do").
-  • "_show_help" — when the user is asking for help, instructions, or how to
-    use the bot.
+  • A REAL task name from the catalog — only when the user is clearly asking
+    to PERFORM an action that one task explicitly does. Extract parameters
+    from the message into the "parameters" object.
+  • "_show_results" — when the user is asking to SEE / SHOW / GET the most
+    recent output of a specific task without running it again
+    (e.g. "results from py_render", "show me my last screenshots from
+    take_screenshot", "what did the build_logs task produce"). Put the
+    target task's name in parameters as "task_name".
+  • "_show_tasks" — when the user is asking what the bot can do, what
+    tasks exist, what's available.
+  • "_show_help" — when the user is asking for help or instructions.
   • null — for greetings, chit-chat, or anything the bot can't handle.
 
 Rules:
@@ -31,11 +35,13 @@ Rules:
 - Only include parameter keys that the chosen task declares. Never invent
   parameters.
 - Use the parameter's declared type (string, integer, number, boolean).
-- If a required parameter is missing from the message, set "task" to null and
-  ask for it in "reasoning".
-- When in doubt between picking a real task and one of the virtual routes
-  ("_show_tasks", "_show_help", null), prefer the virtual route. It is much
-  worse to run the wrong task than to ask the user to clarify.
+- If a required parameter is missing from the message, set "task" to null
+  and ask for it in "reasoning".
+- "Latest", "most recent", "show me the output of …", "results from X",
+  "what did X produce" all map to "_show_results", NOT to running a task.
+- When in doubt between running a real task and one of the virtual routes,
+  prefer the virtual route. It is much worse to run the wrong task than
+  to ask the user to clarify.
 """;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -92,6 +98,21 @@ Rules:
             return new TaskMatch(payload.Task, new Dictionary<string, object?>(), payload.Reasoning);
         }
 
+        if (payload.Task == ShowResultsRoute)
+        {
+            // Carry through the task_name parameter (validated against the
+            // catalog by the bot before evaluating the output spec, so a
+            // hallucinated name can't slip through).
+            var args = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            if (payload.Parameters is not null &&
+                payload.Parameters.TryGetValue("task_name", out var nameElement) &&
+                nameElement.ValueKind == JsonValueKind.String)
+            {
+                args["task_name"] = nameElement.GetString();
+            }
+            return new TaskMatch(payload.Task, args, payload.Reasoning);
+        }
+
         var task = _registry.Find(payload.Task);
         if (task is null)
         {
@@ -110,6 +131,7 @@ Rules:
         sb.AppendLine("Virtual routes (always available):");
         sb.AppendLine($"- {ShowTasksRoute}: route here when the user asks what tasks/commands exist");
         sb.AppendLine($"- {ShowHelpRoute}: route here when the user asks for help or instructions");
+        sb.AppendLine($"- {ShowResultsRoute}: route here when the user wants to see the latest output of a specific task without running it. Set parameters.task_name to the task's name.");
         sb.AppendLine();
         sb.AppendLine("Task catalog:");
         foreach (var task in _registry.Tasks)
@@ -150,6 +172,7 @@ Rules:
         }
         taskNames.Add(ShowTasksRoute);
         taskNames.Add(ShowHelpRoute);
+        taskNames.Add(ShowResultsRoute);
 
         return new JsonObject
         {

@@ -207,6 +207,12 @@ public sealed class TelegramBotService : BackgroundService
                 await bot.SendMessage(chatId, BuildHelp(), cancellationToken: ct);
                 return;
             }
+            if (match.TaskName == TaskMatcher.ShowResultsRoute)
+            {
+                var requested = match.Parameters.TryGetValue("task_name", out var tn) ? tn?.ToString() : null;
+                await SendResultsAsync(chatId, requested, ct);
+                return;
+            }
 
             var task = _registry.Find(match.TaskName)!;
 
@@ -263,20 +269,91 @@ public sealed class TelegramBotService : BackgroundService
             case "/whoami":
                 await bot.SendMessage(chatId, $"chat={chatId}", cancellationToken: cancellationToken);
                 break;
+            case "/results":
+                {
+                    var arg = space < 0 ? null : text[(space + 1)..].Trim();
+                    await SendResultsAsync(chatId, arg, cancellationToken);
+                    break;
+                }
             default:
                 await bot.SendMessage(chatId, "Unknown command. Try /help.", cancellationToken: cancellationToken);
                 break;
         }
     }
 
+    /// <summary>
+    /// Look up the named task and re-evaluate its output spec against the
+    /// current state of disk WITHOUT running the command. For Images / File
+    /// / LogTail outputs this just reads what's already there. For Text
+    /// outputs (which need stdout from a command) we tell the user to run
+    /// the task instead.
+    /// </summary>
+    private async Task SendResultsAsync(long chatId, string? requestedName, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+
+        if (string.IsNullOrWhiteSpace(requestedName))
+        {
+            await bot.SendMessage(chatId,
+                "Usage: /results <task-name>. See /tasks for the list.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        var task = _registry.Find(requestedName);
+        if (task is null)
+        {
+            var disabled = _registry.DisabledTasks.FirstOrDefault(t =>
+                string.Equals(t.Name, requestedName, StringComparison.OrdinalIgnoreCase));
+            var hint = disabled is not null ? " (it's disabled — flip enabled:true to use)" : "";
+            await bot.SendMessage(chatId,
+                $"No task named <code>{HtmlEscape(requestedName)}</code>{hint}.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        if (task.Output.Type == TaskOutputType.Text)
+        {
+            await bot.SendMessage(chatId,
+                $"<code>{HtmlEscape(task.Name)}</code> has Text output (its stdout). " +
+                "There's no cached state on disk to show — run the task to see results.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        TaskExecutionResult result;
+        try
+        {
+            result = await _executor.EvaluateOutputAsync(task, parameters: null, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            await bot.SendMessage(chatId,
+                $"Could not read latest output for <code>{HtmlEscape(task.Name)}</code>: {HtmlEscape(ex.Message)}",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        if (result.Artifacts.Count == 0)
+        {
+            await bot.SendMessage(chatId,
+                $"No output yet for <code>{HtmlEscape(task.Name)}</code>.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        await SendResultAsync(chatId, result, cancellationToken);
+    }
+
     private string BuildHelp() =>
         "TeleTasks - chat in natural language to run pre-defined tasks.\n\n" +
         "Commands:\n" +
-        "  /tasks       - list configured (and disabled) tasks\n" +
-        "  /reload      - reload tasks.json\n" +
-        "  /dry <text>  - resolve a task and show what would run, without running it\n" +
-        "  /whoami      - show your user/chat IDs\n" +
-        "  /help        - this message\n\n" +
+        "  /tasks         - list configured (and disabled) tasks\n" +
+        "  /reload        - reload tasks.json\n" +
+        "  /dry <text>    - resolve a task and show what would run, without running it\n" +
+        "  /results <task> - show the latest output of <task> without running it\n" +
+        "  /whoami        - show your user/chat IDs\n" +
+        "  /help          - this message\n\n" +
         "Anything else is sent to the local LLM for matching.";
 
     private string BuildTaskList()
