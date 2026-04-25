@@ -34,6 +34,36 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
   but the schema constraint means there's little quality gain from spending more
   RAM.
 
+## Where configuration lives
+
+All persistent state — the wizard's output, your hand-edits, and the
+`tasks.json` catalog — goes into a single user-level config directory:
+
+```
+$TELETASKS_CONFIG_DIR        # if you set it
+  → $XDG_CONFIG_HOME/teletasks/
+  → $HOME/.config/teletasks/  ← Linux/macOS default
+  → %APPDATA%\teletasks\      ← Windows fallback
+```
+
+This dodges a footgun where the bot would read from `bin/Debug/net8.0/`
+while `dotnet run -c Release` would put a fresh build in `bin/Release/net8.0/`
+and silently drop your `Local.json`.
+
+The bot logs every config source it loaded at startup, so if something looks
+off you can always see where it came from:
+
+```
+info: TeleTasks.Configuration[0] Config dir: /home/me/.config/teletasks
+info: TeleTasks.Configuration[0]   json /opt/teletasks/appsettings.json (loaded)
+info: TeleTasks.Configuration[0]   json /opt/teletasks/appsettings.Local.json (missing, optional)
+info: TeleTasks.Configuration[0]   json /home/me/.config/teletasks/appsettings.Local.json (loaded)
+info: TeleTasks.Services.TaskRegistry[0] Loaded 14 task(s) from /home/me/.config/teletasks/tasks.json
+```
+
+A `Local.json` next to the binary is still loaded if it exists (legacy
+installs), but the user-config-dir copy overrides it.
+
 ## Configure
 
 The first time you run the bot with no configuration, it launches an

@@ -32,11 +32,17 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 
 // Host.CreateApplicationBuilder already loads appsettings.json, the env-specific
 // file, DOTNET_ env vars, and the command line. We layer on:
-//   - appsettings.Local.json (wizard output, gitignored)
+//   - legacy appsettings.Local.json next to the binary (older installs)
+//   - appsettings.Local.json in the user's config dir (canonical location)
 //   - TELETASKS_-prefixed env vars (deployment override)
 //   - command line (re-applied last so it always wins)
+//
+// The user-config-dir copy comes last among the JSON files so it overrides
+// anything in the bin output, regardless of Debug/Release configuration.
+var configDir = TeleTasks.Configuration.UserConfigDirectory.Resolve();
 builder.Configuration
     .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true)
+    .AddJsonFile(Path.Combine(configDir, "appsettings.Local.json"), optional: true, reloadOnChange: true)
     .AddEnvironmentVariables(prefix: "TELETASKS_")
     .AddCommandLine(args);
 
@@ -91,5 +97,32 @@ builder.Logging.AddSimpleConsole(options =>
 });
 
 var host = builder.Build();
+
+// Log every active configuration source so a "why is my Local.json being ignored?"
+// problem is always one logline away from being answered.
+{
+    var startupLogger = host.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("TeleTasks.Configuration");
+    startupLogger.LogInformation("Config dir: {Dir}", configDir);
+    foreach (var src in ((Microsoft.Extensions.Configuration.IConfigurationRoot)builder.Configuration).Providers)
+    {
+        if (src is Microsoft.Extensions.Configuration.Json.JsonConfigurationProvider j)
+        {
+            var path = j.Source.Path ?? "(unknown)";
+            var fullPath = j.Source.FileProvider is Microsoft.Extensions.FileProviders.PhysicalFileProvider pfp
+                ? Path.Combine(pfp.Root, path)
+                : path;
+            var exists = File.Exists(fullPath);
+            startupLogger.LogInformation(
+                "  json {Path} {Status}",
+                fullPath, exists ? "(loaded)" : "(missing, optional)");
+        }
+        else
+        {
+            startupLogger.LogInformation("  {Type}", src.GetType().Name);
+        }
+    }
+}
+
 await host.RunAsync();
 return 0;

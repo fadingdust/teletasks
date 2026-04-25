@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using TeleTasks.Configuration;
 
 namespace TeleTasks.Cli;
 
@@ -16,11 +17,12 @@ public static class SetupCommand
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
-    public static string DefaultSavePath => Path.Combine(AppContext.BaseDirectory, "appsettings.Local.json");
+    public static string DefaultSavePath => UserConfigDirectory.LocalSettingsPath;
 
     public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         var savePath = DefaultSavePath;
+        UserConfigDirectory.EnsureExists();
         for (var i = 0; i < args.Length; i++)
         {
             if ((args[i] == "--output" || args[i] == "-o") && i + 1 < args.Length)
@@ -40,6 +42,8 @@ public static class SetupCommand
 
     public static async Task<bool> RunInteractiveAsync(string savePath, CancellationToken cancellationToken)
     {
+        var dir = Path.GetDirectoryName(savePath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         Console.WriteLine();
         Console.WriteLine("TeleTasks setup");
         Console.WriteLine("===============");

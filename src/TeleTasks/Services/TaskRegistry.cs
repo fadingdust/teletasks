@@ -77,6 +77,14 @@ public sealed class TaskRegistry
             return configured;
         }
 
+        // Prefer the user config directory (where `discover -w` writes by default,
+        // and where users edit by hand), falling back to ContentRoot then bin.
+        var userConfigPath = Path.Combine(UserConfigDirectory.Resolve(), configured);
+        if (File.Exists(userConfigPath))
+        {
+            return userConfigPath;
+        }
+
         var contentRootPath = Path.Combine(_env.ContentRootPath, configured);
         if (File.Exists(contentRootPath))
         {
@@ -84,7 +92,13 @@ public sealed class TaskRegistry
         }
 
         var binPath = Path.Combine(AppContext.BaseDirectory, configured);
-        return binPath;
+        if (File.Exists(binPath))
+        {
+            return binPath;
+        }
+
+        // Nothing exists yet — return the user-config path so a future write goes there.
+        return userConfigPath;
     }
 
     private static void Validate(TaskCatalog catalog)

@@ -117,7 +117,9 @@ public static class DiscoverCommand
 
         if (opts.Write)
         {
-            var path = opts.OutputPath ?? Path.Combine(Directory.GetCurrentDirectory(), "tasks.json");
+            var path = opts.OutputPath ?? UserConfigDirectory.TasksPath;
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             var catalog = TaskCatalogWriter.Load(path);
             var result = TaskCatalogWriter.Merge(catalog, definitions, opts.ForceReplace);
             TaskCatalogWriter.Save(path, catalog);
@@ -246,6 +248,8 @@ Use plain English, no markdown, no command syntax. Reply with JSON only.
         var config = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: true)
+            .AddJsonFile("appsettings.Local.json", optional: true)
+            .AddJsonFile(UserConfigDirectory.LocalSettingsPath, optional: true)
             .AddEnvironmentVariables(prefix: "TELETASKS_")
             .Build();
 
