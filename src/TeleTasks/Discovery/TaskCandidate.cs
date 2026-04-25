@@ -20,6 +20,14 @@ public sealed class TaskCandidate
 
     public TaskOutputSpec Output { get; init; } = new() { Type = TaskOutputType.Text };
 
+    /// <summary>
+    /// Discovery-only context: the script/recipe/file body that this candidate
+    /// was extracted from. Not serialized into tasks.json, but fed to the LLM
+    /// during --llm polish so it can write concrete parameter descriptions
+    /// based on how $1, $2, --flag, etc. are actually used.
+    /// </summary>
+    public string? SourceText { get; set; }
+
     public TaskDefinition ToDefinition()
     {
         var task = new TaskDefinition

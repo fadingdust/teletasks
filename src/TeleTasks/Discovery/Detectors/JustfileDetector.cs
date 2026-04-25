@@ -56,7 +56,8 @@ public static class JustfileDetector
                         .Concat(args.Skip(0))
                         .ToList(),
                     WorkingDirectory = projectPath,
-                    Parameters = parameters
+                    Parameters = parameters,
+                    SourceText = ExtractRecipeBody(lines, i)
                 };
             }
         }
@@ -100,5 +101,20 @@ public static class JustfileDetector
         var line = lines[index - 1].Trim();
         if (string.IsNullOrEmpty(line) || !line.StartsWith('#')) return null;
         return line.TrimStart('#').Trim();
+    }
+
+    private static string? ExtractRecipeBody(string[] lines, int headerLine)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(lines[headerLine]);
+        for (var i = headerLine + 1; i < lines.Length && i < headerLine + 30; i++)
+        {
+            var line = lines[i];
+            // Recipe body is indented; an unindented non-empty line ends the recipe.
+            if (line.StartsWith(' ') || line.StartsWith('\t')) sb.AppendLine(line);
+            else if (string.IsNullOrWhiteSpace(line)) continue;
+            else break;
+        }
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 }

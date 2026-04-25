@@ -50,7 +50,8 @@ public static class MakefileDetector
                     Description = description,
                     Command = "/usr/bin/make",
                     Args = new List<string> { "-C", projectPath, target },
-                    WorkingDirectory = projectPath
+                    WorkingDirectory = projectPath,
+                    SourceText = ExtractTargetBody(lines, i)
                 };
             }
         }
@@ -62,5 +63,20 @@ public static class MakefileDetector
         var line = lines[index - 1].Trim();
         if (string.IsNullOrEmpty(line) || !line.StartsWith('#')) return null;
         return line.TrimStart('#').Trim();
+    }
+
+    private static string? ExtractTargetBody(string[] lines, int targetLine)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(lines[targetLine]);
+        for (var i = targetLine + 1; i < lines.Length && i < targetLine + 30; i++)
+        {
+            var line = lines[i];
+            // Recipe lines are tab-indented; blank lines or another rule end the recipe.
+            if (line.StartsWith('\t')) sb.AppendLine(line);
+            else if (string.IsNullOrWhiteSpace(line)) continue;
+            else break;
+        }
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 }

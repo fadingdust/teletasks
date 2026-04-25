@@ -52,9 +52,16 @@ public static class ShellScriptDetector
                 Command = "/bin/bash",
                 Args = args,
                 WorkingDirectory = projectPath,
-                Parameters = parameters
+                Parameters = parameters,
+                SourceText = TruncateForLlm(string.Join('\n', lines))
             };
         }
+    }
+
+    private static string TruncateForLlm(string text, int max = 2000)
+    {
+        if (text.Length <= max) return text;
+        return text[..max] + "\n... (truncated)";
     }
 
     private static string? ExtractHeaderDescription(string[] lines)

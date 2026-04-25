@@ -171,9 +171,16 @@ if __name__ == '__main__':
                 Command = python,
                 Args = args,
                 WorkingDirectory = projectPath,
-                Parameters = parameters
+                Parameters = parameters,
+                SourceText = TruncateForLlm(contents)
             };
         }
+    }
+
+    private static string TruncateForLlm(string text, int max = 2500)
+    {
+        if (text.Length <= max) return text;
+        return text[..max] + "\n... (truncated)";
     }
 
     private static (List<string> args, List<TaskParameter> parameters, List<string> skipped) BuildInvocation(

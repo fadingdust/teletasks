@@ -144,11 +144,22 @@ public static class DiscoverCommand
         var sp = BuildLlmServices();
         var ollama = sp.GetRequiredService<OllamaClient>();
         const string system = """
-You write short, friendly one-line documentation for personal Linux tasks.
-Given a task and (optionally) its parameters, return:
-- a single-sentence task description
-- a single-sentence description for each parameter, keyed by name
-Use plain English, no markdown, no command syntax. Reply with JSON only.
+You write short, helpful one-line documentation for personal Linux tasks.
+
+You will be given a task definition AND (when available) the underlying
+script / recipe / source code it was extracted from. Use the source to
+infer concrete descriptions:
+- Read how each positional argument ($1, $2) or named flag is actually
+  used inside the source — what real-world thing the user is supposed to
+  pass there (e.g. "the text prompt to send to the model", "path to the
+  output file", "branch name to deploy").
+- The task description should say what the task actually does, not just
+  paraphrase the command line. Mention the underlying tool (docker,
+  ffmpeg, rsync, etc.) when it's clear from the source.
+
+Use plain English. No markdown. No command syntax. Reply with JSON only.
+If a parameter's purpose is genuinely unclear from the source, leave its
+description out of the response (don't invent one).
 """;
 
         foreach (var c in candidates)
@@ -183,6 +194,14 @@ Use plain English, no markdown, no command syntax. Reply with JSON only.
                 if (!string.IsNullOrWhiteSpace(p.Description)) sb.Append(": ").Append(p.Description);
                 sb.AppendLine();
             }
+        }
+        if (!string.IsNullOrWhiteSpace(c.SourceText))
+        {
+            sb.AppendLine();
+            sb.AppendLine("Source content (this is the script/recipe/file the task was extracted from):");
+            sb.AppendLine("---");
+            sb.AppendLine(c.SourceText);
+            sb.AppendLine("---");
         }
         return sb.ToString();
     }
