@@ -110,6 +110,11 @@ public static class DiscoverCommand
             Console.Error.WriteLine($"#   {c.Source} -> {c.SuggestedName}");
         }
 
+        if (opts.Inspect)
+        {
+            PathInspector.Enrich(candidates);
+        }
+
         if (opts.UseLlm)
         {
             await PolishWithLlmAsync(candidates, cancellationToken);
@@ -301,7 +306,7 @@ description out of the response (don't invent one).
 
     private static DiscoverOptions ParseOptions(string[] args)
     {
-        var opts = new DiscoverOptions();
+        var opts = new DiscoverOptions { Inspect = true };
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -324,6 +329,12 @@ description out of the response (don't invent one).
                     break;
                 case "--no-llm":
                     opts.UseLlm = false;
+                    break;
+                case "--inspect":
+                    opts.Inspect = true;
+                    break;
+                case "--no-inspect":
+                    opts.Inspect = false;
                     break;
                 case "--user":
                     opts.UserScope = true;
@@ -393,6 +404,11 @@ Common options:
                           you want stale entries gone. Implies --write.
   --llm                   ask Ollama to refine descriptions (off by default)
   --no-llm                disable LLM (default)
+  --inspect               for parameters whose name looks path-shaped and have
+                          a default, stat the path and append a short note to
+                          the task description ("output_dir=dir, 12 .png files,
+                          latest 3m ago"). Default: ON.
+  --no-inspect            disable the inspect pass
 
 Examples:
   teletasks discover project --path ~/projects/scripts
@@ -424,5 +440,6 @@ Examples:
         public string? Pattern { get; set; }
         public bool Recursive { get; set; }
         public bool ForceReplace { get; set; }
+        public bool Inspect { get; set; }
     }
 }
