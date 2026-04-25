@@ -18,6 +18,7 @@ public static class ProjectDiscoverer
             .Concat(PackageJsonDetector.Detect(absolute))
             .Concat(PyprojectDetector.Detect(absolute))
             .Concat(VsCodeTasksDetector.Detect(absolute))
+            .Concat(ArgparsePythonDetector.Detect(absolute))
             .Concat(ShellScriptDetector.Detect(absolute));
     }
 }

@@ -87,7 +87,20 @@ public sealed class TelegramBotService : BackgroundService
 
         try
         {
-            if (text.StartsWith('/'))
+            var dryRun = false;
+            var routedText = text;
+            if (text.StartsWith("/dry", StringComparison.OrdinalIgnoreCase) &&
+                (text.Length == 4 || char.IsWhiteSpace(text[4])))
+            {
+                dryRun = true;
+                routedText = text.Length > 4 ? text[4..].TrimStart() : string.Empty;
+                if (string.IsNullOrWhiteSpace(routedText))
+                {
+                    await bot.SendMessage(chatId, "Usage: /dry <natural-language request>", cancellationToken: ct);
+                    return;
+                }
+            }
+            else if (text.StartsWith('/'))
             {
                 await HandleCommandAsync(chatId, text, ct);
                 return;
@@ -95,7 +108,7 @@ public sealed class TelegramBotService : BackgroundService
 
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            var match = await _matcher.MatchAsync(text, ct);
+            var match = await _matcher.MatchAsync(routedText, ct);
             if (match is null || string.IsNullOrEmpty(match.TaskName))
             {
                 var reason = match?.Reasoning;
@@ -107,6 +120,14 @@ public sealed class TelegramBotService : BackgroundService
             }
 
             var task = _registry.Find(match.TaskName)!;
+
+            if (dryRun)
+            {
+                await bot.SendMessage(chatId, RenderDryRun(task, match.Parameters),
+                    parseMode: ParseMode.Markdown, cancellationToken: ct);
+                return;
+            }
+
             await bot.SendMessage(chatId,
                 $"→ Running `{task.Name}`{FormatParameterList(match.Parameters)}",
                 parseMode: ParseMode.Markdown,
@@ -162,15 +183,18 @@ public sealed class TelegramBotService : BackgroundService
     private string BuildHelp() =>
         "TeleTasks - chat in natural language to run pre-defined tasks.\n\n" +
         "Commands:\n" +
-        "  /tasks  - list configured tasks\n" +
-        "  /reload - reload tasks.json\n" +
-        "  /whoami - show your user/chat IDs\n" +
-        "  /help   - this message\n\n" +
+        "  /tasks       - list configured (and disabled) tasks\n" +
+        "  /reload      - reload tasks.json\n" +
+        "  /dry <text>  - resolve a task and show what would run, without running it\n" +
+        "  /whoami      - show your user/chat IDs\n" +
+        "  /help        - this message\n\n" +
         "Anything else is sent to the local LLM for matching.";
 
     private string BuildTaskList()
     {
-        if (_registry.Tasks.Count == 0) return "No tasks configured.";
+        if (_registry.Tasks.Count == 0 && _registry.DisabledTasks.Count == 0)
+            return "No tasks configured.";
+
         var sb = new StringBuilder();
         sb.AppendLine("Available tasks:");
         foreach (var t in _registry.Tasks)
@@ -181,6 +205,16 @@ public sealed class TelegramBotService : BackgroundService
                 sb.Append(" - ").Append(t.Description);
             }
             sb.AppendLine();
+        }
+
+        if (_registry.DisabledTasks.Count > 0)
+        {
+            sb.AppendLine();
+            sb.Append("Disabled (").Append(_registry.DisabledTasks.Count).AppendLine("):");
+            foreach (var t in _registry.DisabledTasks)
+            {
+                sb.Append("• ").Append(t.Name).AppendLine();
+            }
         }
         return sb.ToString();
     }
@@ -246,6 +280,44 @@ public sealed class TelegramBotService : BackgroundService
         if (parameters.Count == 0) return string.Empty;
         var pairs = parameters.Select(kv => $"{kv.Key}={kv.Value}");
         return $" ({string.Join(", ", pairs)})";
+    }
+
+    private static string RenderDryRun(TaskDefinition task, IReadOnlyDictionary<string, object?> parameters)
+    {
+        var sb = new StringBuilder();
+        sb.Append("*Dry run*: `").Append(Escape(task.Name)).AppendLine("`");
+        if (!string.IsNullOrWhiteSpace(task.Description))
+        {
+            sb.Append("_").Append(Escape(task.Description)).AppendLine("_");
+        }
+        sb.AppendLine();
+
+        if (parameters.Count > 0)
+        {
+            sb.AppendLine("Parameters:");
+            foreach (var (k, v) in parameters)
+            {
+                sb.Append("  • ").Append(Escape(k)).Append(" = `").Append(Escape(v?.ToString() ?? "null")).AppendLine("`");
+            }
+            sb.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.Command))
+        {
+            var cmd = ParameterTemplate.Apply(task.Command, parameters);
+            var args = ParameterTemplate.ApplyAll(task.Args, parameters);
+            sb.AppendLine("Would run:");
+            sb.Append("```\n").Append(cmd);
+            foreach (var a in args) sb.Append(' ').Append(a);
+            sb.AppendLine().AppendLine("```");
+        }
+        else
+        {
+            sb.AppendLine("(no command — output is collected directly)");
+        }
+
+        sb.Append("Output type: `").Append(task.Output.Type).Append('`');
+        return sb.ToString();
     }
 
     private static string Escape(string input) =>

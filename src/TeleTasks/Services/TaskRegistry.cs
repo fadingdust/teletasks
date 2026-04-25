@@ -21,6 +21,7 @@ public sealed class TaskRegistry
     private readonly ILogger<TaskRegistry> _logger;
 
     private IReadOnlyList<TaskDefinition> _tasks = Array.Empty<TaskDefinition>();
+    private IReadOnlyList<TaskDefinition> _disabledTasks = Array.Empty<TaskDefinition>();
     private DateTime _loadedAtUtc;
 
     public TaskRegistry(
@@ -34,6 +35,8 @@ public sealed class TaskRegistry
     }
 
     public IReadOnlyList<TaskDefinition> Tasks => _tasks;
+
+    public IReadOnlyList<TaskDefinition> DisabledTasks => _disabledTasks;
 
     public DateTime LoadedAtUtc => _loadedAtUtc;
 
@@ -55,9 +58,12 @@ public sealed class TaskRegistry
 
         Validate(catalog);
 
-        _tasks = catalog.Tasks;
+        _tasks = catalog.Tasks.Where(t => t.IsEnabled).ToList();
+        _disabledTasks = catalog.Tasks.Where(t => !t.IsEnabled).ToList();
         _loadedAtUtc = DateTime.UtcNow;
-        _logger.LogInformation("Loaded {Count} task(s) from {Path}", _tasks.Count, path);
+        _logger.LogInformation(
+            "Loaded {Count} task(s) from {Path} ({Disabled} disabled).",
+            _tasks.Count, path, _disabledTasks.Count);
     }
 
     public TaskDefinition? Find(string name) =>

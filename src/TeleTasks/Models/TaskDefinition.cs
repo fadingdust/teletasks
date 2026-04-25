@@ -16,6 +16,12 @@ public sealed class TaskDefinition
     [JsonPropertyName("description")]
     public string Description { get; set; } = string.Empty;
 
+    [JsonPropertyName("enabled")]
+    public bool? Enabled { get; set; }
+
+    [JsonIgnore]
+    public bool IsEnabled => Enabled ?? true;
+
     [JsonPropertyName("command")]
     public string? Command { get; set; }
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -107,20 +108,21 @@ public static class DiscoverCommand
         var sp = BuildLlmServices();
         var ollama = sp.GetRequiredService<OllamaClient>();
         const string system = """
-You write short, friendly one-line descriptions of personal Linux tasks.
-Reply with strict JSON: {"description": "<one short sentence>"}. No prose.
+You write short, friendly one-line documentation for personal Linux tasks.
+Given a task and (optionally) its parameters, return:
+- a single-sentence task description
+- a single-sentence description for each parameter, keyed by name
+Use plain English, no markdown, no command syntax. Reply with JSON only.
 """;
 
         foreach (var c in candidates)
         {
             try
             {
-                var prompt = $"Source: {c.Source}\nName: {c.SuggestedName}\nCurrent description: {c.Description}\nCommand: {c.Command} {string.Join(' ', c.Args)}";
-                var raw = await ollama.ChatJsonAsync(system, prompt, cancellationToken);
-                if (TryExtractField(raw, "description", out var polished) && !string.IsNullOrWhiteSpace(polished))
-                {
-                    c.Description = polished.Trim();
-                }
+                var prompt = BuildPolishPrompt(c);
+                var schema = BuildPolishSchema(c);
+                var raw = await ollama.ChatStructuredAsync(system, prompt, schema, cancellationToken);
+                ApplyPolish(c, raw);
             }
             catch (Exception ex)
             {
@@ -129,24 +131,82 @@ Reply with strict JSON: {"description": "<one short sentence>"}. No prose.
         }
     }
 
-    private static bool TryExtractField(string raw, string field, out string value)
+    private static string BuildPolishPrompt(TaskCandidate c)
     {
-        value = string.Empty;
+        var sb = new System.Text.StringBuilder();
+        sb.Append("Source: ").AppendLine(c.Source);
+        sb.Append("Name: ").AppendLine(c.SuggestedName);
+        sb.Append("Current description: ").AppendLine(c.Description);
+        sb.Append("Command: ").Append(c.Command).Append(' ').AppendLine(string.Join(' ', c.Args));
+        if (c.Parameters.Count > 0)
+        {
+            sb.AppendLine("Parameters:");
+            foreach (var p in c.Parameters)
+            {
+                sb.Append("  - ").Append(p.Name).Append(" (").Append(p.Type).Append(')');
+                if (!string.IsNullOrWhiteSpace(p.Description)) sb.Append(": ").Append(p.Description);
+                sb.AppendLine();
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static JsonNode BuildPolishSchema(TaskCandidate c)
+    {
+        var paramProps = new JsonObject();
+        foreach (var p in c.Parameters)
+        {
+            paramProps[p.Name] = new JsonObject { ["type"] = "string" };
+        }
+
+        var schema = new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["description"] = new JsonObject { ["type"] = "string" },
+                ["parameters"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = paramProps,
+                    ["additionalProperties"] = false
+                }
+            },
+            ["required"] = new JsonArray { "description" },
+            ["additionalProperties"] = false
+        };
+        return schema;
+    }
+
+    private static void ApplyPolish(TaskCandidate c, string raw)
+    {
         var start = raw.IndexOf('{');
         var end = raw.LastIndexOf('}');
-        if (start < 0 || end <= start) return false;
+        if (start < 0 || end <= start) return;
 
         try
         {
             using var doc = JsonDocument.Parse(raw.Substring(start, end - start + 1));
-            if (doc.RootElement.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String)
+            var root = doc.RootElement;
+            if (root.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String)
             {
-                value = v.GetString() ?? string.Empty;
-                return true;
+                var polished = d.GetString();
+                if (!string.IsNullOrWhiteSpace(polished)) c.Description = polished.Trim();
+            }
+            if (root.TryGetProperty("parameters", out var p) && p.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in p.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind != JsonValueKind.String) continue;
+                    var match = c.Parameters.FirstOrDefault(x =>
+                        string.Equals(x.Name, prop.Name, StringComparison.OrdinalIgnoreCase));
+                    if (match is null) continue;
+                    var text = prop.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(text)) match.Description = text.Trim();
+                }
             }
         }
         catch (JsonException) { }
-        return false;
     }
 
     private static IServiceProvider BuildLlmServices()

@@ -179,10 +179,11 @@ By default, output goes to **stdout** so you can review and pipe it. Add `-w` to
 so re-runs never clobber). Use `-o path/to/tasks.json` to write somewhere else.
 
 Discovery is **deterministic by default** — no LLM call is made. Add `--llm` to
-have Ollama (using the same `Ollama:Model` from appsettings) rewrite the
-`description` field of each candidate. Even with `--llm`, structural fields
-(name, command, args, parameters) are produced by the parsers, not the model,
-so a 1B model is plenty for the polish pass.
+have Ollama (using the same `Ollama:Model` from appsettings) rewrite both the
+task `description` and each parameter's `description` in one schema-constrained
+call per task. Structural fields (name, command, args, parameter names/types/
+defaults) are always produced by the parsers, never the model, so a 1B model is
+plenty for the polish pass.
 
 ### What gets detected from a project
 
@@ -194,6 +195,7 @@ so a 1B model is plenty for the polish pass.
 | `pyproject.toml` `[project.scripts]` and `[tool.poetry.scripts]` | `py_<entry>` | —                 |
 | `.vscode/tasks.json`                | `vsc_<label>`                               | —                 |
 | `*.sh` (top-level)                  | `sh_<name>`                                 | `${1:-default}` and `$N` positional args; `getopts` flags listed in description |
+| `*.py` (top-level, uses `argparse`) | `py_<name>`                                 | positional args + `--name VALUE` options become typed parameters with defaults, `help` text, and `choices` (mapped to `enum`). `store_true`/`store_false` flags are listed in description (no clean way to template a conditional flag). Requires `python3` on PATH; the helper uses `ast` only and does not import your code. |
 
 Comments above a `Makefile` target / `justfile` recipe / `# Description:` line
 in a shell script are picked up as the task `description`.
@@ -221,9 +223,18 @@ Then in Telegram, `/reload` picks up the new tasks without restarting.
 ## Built-in commands
 
 - `/help`, `/start` – usage
-- `/tasks` – list configured tasks
+- `/tasks` – list configured tasks (and disabled ones, separately)
 - `/reload` – reload `tasks.json` without restarting
+- `/dry <text>` – resolve a task and show what *would* run, without running it.
+  Useful to verify the LLM picked the right one and parameters look right.
 - `/whoami` – show your user / chat IDs (handy for the allow-list)
+
+## Disabling tasks
+
+Set `"enabled": false` on a task in `tasks.json` to hide it from the matcher
+without deleting it. `/tasks` shows disabled ones in a separate section. If
+the field is omitted, the task is enabled. Useful for keeping discovered tasks
+around for review without exposing them to the bot.
 
 ## Project layout
 

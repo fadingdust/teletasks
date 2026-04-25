@@ -66,6 +66,7 @@
     {
       "name": "take_webcam_photo",
       "description": "Capture a still frame from the default webcam and send it.",
+      "enabled": false,
       "command": "/usr/bin/ffmpeg",
       "args": [
         "-y",
