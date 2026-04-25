@@ -1,8 +1,16 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using TeleTasks.Cli;
 using TeleTasks.Configuration;
 using TeleTasks.Services;
+
+if (args.Length > 0 && args[0].Equals("discover", StringComparison.OrdinalIgnoreCase))
+{
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+    return await DiscoverCommand.RunAsync(args.Skip(1).ToArray(), cts.Token);
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -33,3 +41,4 @@ builder.Logging.AddSimpleConsole(options =>
 
 var host = builder.Build();
 await host.RunAsync();
+return 0;

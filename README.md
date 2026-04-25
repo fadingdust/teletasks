@@ -28,8 +28,11 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
 
 - .NET 8 SDK
 - A Telegram bot token (talk to [@BotFather](https://t.me/BotFather))
-- Ollama running locally with a chat model that supports JSON mode, e.g.
-  `ollama pull llama3.1` (Llama 3.1, Qwen 2.5, Mistral Nemo, etc. all work)
+- Ollama running locally. The matcher uses **JSON-Schema-constrained output**, so
+  small models work well — `ollama pull llama3.2:1b` (~1.3 GB, the default) or
+  `ollama pull qwen2.5:0.5b` for an even lighter option. Larger models work too,
+  but the schema constraint means there's little quality gain from spending more
+  RAM.
 
 ## Configure
 
@@ -155,6 +158,66 @@ For sending the most recent files in a directory (e.g. screenshots):
 - The LLM is not asked to run arbitrary commands — it only chooses a task name
   and fills declared parameters. Task definitions are the trust boundary.
 
+## Discovering tasks automatically
+
+Rather than hand-writing `tasks.json`, you can scan your machine and projects:
+
+```bash
+# scan a project for Makefile/justfile/package.json/pyproject.toml/sh/.vscode
+dotnet run --project src/TeleTasks -- discover project --path ~/code/my-script
+# or, when run from inside the project:
+cd ~/code/my-script
+dotnet /path/to/TeleTasks.dll discover project
+
+# emit journalctl tail tasks per systemd unit
+dotnet run --project src/TeleTasks -- discover systemd --running       # only running
+dotnet run --project src/TeleTasks -- discover systemd --user --all    # user scope, all units
+```
+
+By default, output goes to **stdout** so you can review and pipe it. Add `-w` to
+**append** to `./tasks.json` (existing names get suffixed with `_2`, `_3`, ...
+so re-runs never clobber). Use `-o path/to/tasks.json` to write somewhere else.
+
+Discovery is **deterministic by default** — no LLM call is made. Add `--llm` to
+have Ollama (using the same `Ollama:Model` from appsettings) rewrite the
+`description` field of each candidate. Even with `--llm`, structural fields
+(name, command, args, parameters) are produced by the parsers, not the model,
+so a 1B model is plenty for the polish pass.
+
+### What gets detected from a project
+
+| Source                              | Becomes                                     | Parameters lifted |
+| ----------------------------------- | ------------------------------------------- | ----------------- |
+| `Makefile` PHONY/regular targets    | `make_<target>`                             | —                 |
+| `justfile` recipes                  | `just_<recipe>`                             | recipe args + defaults |
+| `package.json` `scripts`            | `npm_<script>`                              | —                 |
+| `pyproject.toml` `[project.scripts]` and `[tool.poetry.scripts]` | `py_<entry>` | —                 |
+| `.vscode/tasks.json`                | `vsc_<label>`                               | —                 |
+| `*.sh` (top-level)                  | `sh_<name>`                                 | `${1:-default}` and `$N` positional args; `getopts` flags listed in description |
+
+Comments above a `Makefile` target / `justfile` recipe / `# Description:` line
+in a shell script are picked up as the task `description`.
+
+### What gets detected from systemd
+
+- A `journal_system` (or `journal_user`) task that dumps the journal to a file
+  with a `lines` parameter
+- One `journal_<unit>` text task per discovered service unit, using the unit's
+  `Description=` as the task description
+
+### Workflow
+
+```bash
+# 1. dry-run, look at the JSON
+dotnet /path/to/TeleTasks.dll discover project > /tmp/draft.json
+$EDITOR /tmp/draft.json                              # trim or rename
+
+# 2. either paste into your real tasks.json or write directly
+dotnet /path/to/TeleTasks.dll discover project -o /etc/teletasks/tasks.json
+```
+
+Then in Telegram, `/reload` picks up the new tasks without restarting.
+
 ## Built-in commands
 
 - `/help`, `/start` – usage
@@ -166,17 +229,31 @@ For sending the most recent files in a directory (e.g. screenshots):
 
 ```
 src/TeleTasks/
-  Program.cs                     # host + DI wiring
+  Program.cs                     # host + DI wiring + CLI dispatch
   Configuration/AppOptions.cs    # Telegram / Ollama / TaskCatalog options
   Models/                        # task & result types
   Services/
     TaskRegistry.cs              # loads tasks.json
-    OllamaClient.cs              # /api/chat with format=json
-    TaskMatcher.cs               # NL → (task, parameters)
+    OllamaClient.cs              # /api/chat with format=json or JSON Schema
+    TaskMatcher.cs               # NL → (task, parameters), schema-constrained
     TaskExecutor.cs              # process invocation + parameter substitution
     OutputCollector.cs           # text / file / image / images / log-tail
     TelegramBotService.cs        # background polling + dispatch
+    TaskCatalogWriter.cs         # load / merge / write tasks.json
     ParameterTemplate.cs         # {name} substitution
+  Cli/
+    DiscoverCommand.cs           # `teletasks discover ...`
+  Discovery/
+    TaskCandidate.cs
+    ProjectDiscoverer.cs         # orchestrates per-project detectors
+    SystemdDiscoverer.cs         # systemctl + journalctl
+    Detectors/
+      MakefileDetector.cs
+      JustfileDetector.cs
+      PackageJsonDetector.cs
+      PyprojectDetector.cs
+      ShellScriptDetector.cs
+      VsCodeTasksDetector.cs
   appsettings.example.json
   tasks.example.json
 ```

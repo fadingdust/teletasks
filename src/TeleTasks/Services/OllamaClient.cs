@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -28,10 +29,13 @@ public sealed class OllamaClient
         _logger = logger;
     }
 
-    public async Task<string> ChatJsonAsync(
-        string systemPrompt,
-        string userPrompt,
-        CancellationToken cancellationToken)
+    public Task<string> ChatJsonAsync(string systemPrompt, string userPrompt, CancellationToken cancellationToken) =>
+        ChatAsync(systemPrompt, userPrompt, format: "json", cancellationToken);
+
+    public Task<string> ChatStructuredAsync(string systemPrompt, string userPrompt, JsonNode schema, CancellationToken cancellationToken) =>
+        ChatAsync(systemPrompt, userPrompt, format: schema, cancellationToken);
+
+    private async Task<string> ChatAsync(string systemPrompt, string userPrompt, object? format, CancellationToken cancellationToken)
     {
         using var http = _factory.CreateClient(HttpClientName);
         http.BaseAddress ??= new Uri(_options.Endpoint.TrimEnd('/') + "/");
@@ -41,7 +45,7 @@ public sealed class OllamaClient
         {
             Model = _options.Model,
             Stream = false,
-            Format = "json",
+            Format = format,
             Options = new ChatOptions { Temperature = _options.Temperature },
             Messages = new List<ChatMessage>
             {
@@ -69,7 +73,7 @@ public sealed class OllamaClient
     {
         public string Model { get; set; } = string.Empty;
         public List<ChatMessage> Messages { get; set; } = new();
-        public string? Format { get; set; }
+        public object? Format { get; set; }
         public bool Stream { get; set; }
         public ChatOptions? Options { get; set; }
     }

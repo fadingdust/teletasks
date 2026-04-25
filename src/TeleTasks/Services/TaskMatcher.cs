@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using TeleTasks.Models;
 
@@ -10,21 +11,17 @@ public sealed class TaskMatcher
     private const string SystemPrompt = """
 You are a strict request router for a personal Linux assistant bot.
 
-You will be given:
-  1. A catalog of tasks. Each task has a name, a description, and (optionally) a list of parameters.
-  2. A user message.
-
-Your job: pick the single best-matching task and extract any parameter values.
+Pick the single best-matching task from the catalog and extract any parameter
+values from the user message.
 
 Rules:
-- Respond ONLY with a single JSON object. No prose, no markdown.
-- Schema:
-    {"task": "<task name or null>", "parameters": { "<name>": <value>, ... }, "reasoning": "<short>"}
+- Respond with a single JSON object matching the response schema. No prose.
 - If no task fits, set "task" to null and explain in "reasoning".
-- Only include parameter keys that the chosen task declares. Never invent parameters.
+- Only include parameter keys that the chosen task declares. Never invent
+  parameters.
 - Use the parameter's declared type (string, integer, number, boolean).
-- If a parameter is required and missing from the message, set "task" to null and ask for it
-  in "reasoning".
+- If a required parameter is missing from the message, set "task" to null and
+  ask for it in "reasoning".
 - Be conservative. If the user is just chatting, return null.
 """;
 
@@ -49,7 +46,8 @@ Rules:
     public async Task<TaskMatch?> MatchAsync(string userMessage, CancellationToken cancellationToken)
     {
         var prompt = BuildUserPrompt(userMessage);
-        var raw = await _ollama.ChatJsonAsync(SystemPrompt, prompt, cancellationToken);
+        var schema = BuildResponseSchema();
+        var raw = await _ollama.ChatStructuredAsync(SystemPrompt, prompt, schema, cancellationToken);
 
         _logger.LogDebug("Ollama match raw response: {Raw}", raw);
 
@@ -118,9 +116,40 @@ Rules:
 
         sb.AppendLine();
         sb.Append("User message: ").AppendLine(userMessage);
-        sb.AppendLine();
-        sb.AppendLine("Respond with the JSON object now.");
         return sb.ToString();
+    }
+
+    private JsonNode BuildResponseSchema()
+    {
+        var taskNames = new JsonArray();
+        foreach (var t in _registry.Tasks)
+        {
+            taskNames.Add(t.Name);
+        }
+
+        return new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["task"] = new JsonObject
+                {
+                    ["anyOf"] = new JsonArray
+                    {
+                        new JsonObject { ["type"] = "string", ["enum"] = taskNames },
+                        new JsonObject { ["type"] = "null" }
+                    }
+                },
+                ["parameters"] = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["additionalProperties"] = true
+                },
+                ["reasoning"] = new JsonObject { ["type"] = "string" }
+            },
+            ["required"] = new JsonArray { "task", "parameters", "reasoning" },
+            ["additionalProperties"] = false
+        };
     }
 
     private static string? ExtractJson(string raw)
