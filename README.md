@@ -163,15 +163,19 @@ For sending the most recent files in a directory (e.g. screenshots):
 Rather than hand-writing `tasks.json`, you can scan your machine and projects:
 
 ```bash
-# scan a project for Makefile/justfile/package.json/pyproject.toml/sh/.vscode
+# scan a project for Makefile/justfile/package.json/pyproject.toml/sh/.vscode/argparse
 dotnet run --project src/TeleTasks -- discover project --path ~/code/my-script
-# or, when run from inside the project:
-cd ~/code/my-script
-dotnet /path/to/TeleTasks.dll discover project
 
 # emit journalctl tail tasks per systemd unit
 dotnet run --project src/TeleTasks -- discover systemd --running       # only running
 dotnet run --project src/TeleTasks -- discover systemd --user --all    # user scope, all units
+
+# per-repo git tasks (status, log, diff, branches; +gh runs/PRs if `gh` is installed)
+dotnet run --project src/TeleTasks -- discover git --path ~/code/myrepo
+
+# tail-tasks for *.log files in a directory
+dotnet run --project src/TeleTasks -- discover logs --path /var/log --since 2d
+dotnet run --project src/TeleTasks -- discover logs --path ~/.cache/myapp --recursive
 ```
 
 By default, output goes to **stdout** so you can review and pipe it. Add `-w` to
@@ -206,6 +210,31 @@ in a shell script are picked up as the task `description`.
   with a `lines` parameter
 - One `journal_<unit>` text task per discovered service unit, using the unit's
   `Description=` as the task description
+
+### What gets detected from a git repo
+
+For the repo at `--path` (defaults to cwd):
+
+- `git_<repo>_status`   — `git status --short --branch`
+- `git_<repo>_log`      — `git log --oneline --decorate -n {count}` (default 10)
+- `git_<repo>_diff`     — uncommitted diff written to `/tmp/teletasks-<repo>-diff.patch` and sent as a file
+- `git_<repo>_branches` — `git branch -vv --sort=-committerdate`
+- `gh_<repo>_runs` and `gh_<repo>_prs` — only emitted if the `gh` CLI is on PATH
+
+### What gets detected from a logs directory
+
+`discover logs --path DIR [--since 7d] [--max 100] [--pattern *.log] [--recursive]`
+
+Walks `DIR` (top-level by default; `--recursive` opts into subdirs) and emits
+one `log_<basename>` `LogTail` task per file that:
+
+- matches the glob pattern (default `*.log`)
+- was modified within `--since` days (default 7)
+- is non-empty and not larger than `--max` MB (default 100)
+- is readable by the current user (silently skipped if perms fail)
+
+Each emitted task has a `lines` parameter (default 100) so the bot can answer
+"show me the last 50 lines of nginx" naturally.
 
 ### Workflow
 
@@ -258,6 +287,8 @@ src/TeleTasks/
     TaskCandidate.cs
     ProjectDiscoverer.cs         # orchestrates per-project detectors
     SystemdDiscoverer.cs         # systemctl + journalctl
+    GitDiscoverer.cs             # per-repo status/log/diff/branches (+gh)
+    LogsDiscoverer.cs            # *.log files in a directory
     Detectors/
       MakefileDetector.cs
       JustfileDetector.cs
@@ -265,6 +296,7 @@ src/TeleTasks/
       PyprojectDetector.cs
       ShellScriptDetector.cs
       VsCodeTasksDetector.cs
+      ArgparsePythonDetector.cs
   appsettings.example.json
   tasks.example.json
 ```

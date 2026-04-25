@@ -32,6 +32,10 @@ public static class DiscoverCommand
                     return await RunProjectAsync(opts, cancellationToken);
                 case "systemd":
                     return await RunSystemdAsync(opts, cancellationToken);
+                case "git":
+                    return await RunGitAsync(opts, cancellationToken);
+                case "logs":
+                    return await RunLogsAsync(opts, cancellationToken);
                 case "help":
                 case "--help":
                 case "-h":
@@ -62,6 +66,31 @@ public static class DiscoverCommand
     {
         Console.Error.WriteLine($"# scanning systemd ({(opts.UserScope ? "user" : "system")} scope, {(opts.RunningOnly ? "running" : "all")} units)");
         var candidates = await SystemdDiscoverer.DiscoverAsync(opts.UserScope, opts.RunningOnly, cancellationToken);
+        return await EmitAsync(candidates, opts, cancellationToken);
+    }
+
+    private static async Task<int> RunGitAsync(DiscoverOptions opts, CancellationToken cancellationToken)
+    {
+        var path = opts.Path ?? Directory.GetCurrentDirectory();
+        Console.Error.WriteLine($"# scanning git repo: {Path.GetFullPath(path)}");
+        var candidates = GitDiscoverer.Discover(path);
+        return await EmitAsync(candidates, opts, cancellationToken);
+    }
+
+    private static async Task<int> RunLogsAsync(DiscoverOptions opts, CancellationToken cancellationToken)
+    {
+        var logOpts = new LogsDiscoverOptions
+        {
+            Path = opts.Path ?? "/var/log",
+            SinceDays = opts.SinceDays ?? 7,
+            MaxBytes = opts.MaxMegabytes is int mb ? (long)mb * 1024 * 1024 : 100L * 1024 * 1024,
+            Recursive = opts.Recursive,
+            Pattern = opts.Pattern ?? "*.log"
+        };
+        Console.Error.WriteLine(
+            $"# scanning logs in {Path.GetFullPath(logOpts.Path)} (pattern={logOpts.Pattern}, " +
+            $"recursive={logOpts.Recursive}, since={logOpts.SinceDays}d, max={logOpts.MaxBytes / (1024 * 1024)}MB)");
+        var candidates = LogsDiscoverer.Discover(logOpts);
         return await EmitAsync(candidates, opts, cancellationToken);
     }
 
@@ -260,6 +289,19 @@ Use plain English, no markdown, no command syntax. Reply with JSON only.
                 case "--all":
                     opts.RunningOnly = false;
                     break;
+                case "--since":
+                    if (TryParseDays(args[++i], out var days)) opts.SinceDays = days;
+                    break;
+                case "--max":
+                    if (int.TryParse(args[++i], out var mb)) opts.MaxMegabytes = mb;
+                    break;
+                case "--pattern":
+                    opts.Pattern = args[++i];
+                    break;
+                case "--recursive":
+                case "-r":
+                    opts.Recursive = true;
+                    break;
                 default:
                     if (opts.Path is null && !args[i].StartsWith('-'))
                     {
@@ -278,9 +320,17 @@ Usage: teletasks discover <mode> [options]
 
 Modes:
   project [--path DIR]    scan a directory for Makefile/justfile/package.json/
-                          pyproject.toml scripts, *.sh, and .vscode/tasks.json
+                          pyproject.toml scripts, *.py (argparse), *.sh, and
+                          .vscode/tasks.json
   systemd [--user]        emit journalctl tail tasks per systemd unit
-                          [--running|--all]   only running units (default: all)
+          [--running|--all]   only running units (default: all)
+  git     [--path DIR]    emit per-repo tasks (status, log, diff, branches,
+                          plus gh runs/PRs if `gh` is on PATH)
+  logs    [--path DIR]    emit LogTail tasks for *.log files
+          [--since 7d]    only files modified within this many days (default 7)
+          [--max MB]      skip files larger than this (default 100)
+          [--pattern G]   override the glob pattern (default *.log)
+          [--recursive]   walk subdirectories
 
 Common options:
   --write, -w             append discovered tasks to tasks.json (instead of stdout)
@@ -291,8 +341,18 @@ Common options:
 Examples:
   teletasks discover project --path ~/projects/scripts
   teletasks discover systemd --user --running
-  teletasks discover project -w           # append to ./tasks.json
+  teletasks discover git --path ~/code/myrepo -w
+  teletasks discover logs --path /var/log --since 2d
+  teletasks discover logs --path ~/.cache/myapp --recursive
 """);
+    }
+
+    private static bool TryParseDays(string s, out int days)
+    {
+        days = 0;
+        if (string.IsNullOrEmpty(s)) return false;
+        var trimmed = s.EndsWith('d') ? s[..^1] : s;
+        return int.TryParse(trimmed, out days);
     }
 
     private sealed class DiscoverOptions
@@ -303,5 +363,9 @@ Examples:
         public bool UseLlm { get; set; }
         public bool UserScope { get; set; }
         public bool RunningOnly { get; set; }
+        public int? SinceDays { get; set; }
+        public int? MaxMegabytes { get; set; }
+        public string? Pattern { get; set; }
+        public bool Recursive { get; set; }
     }
 }
