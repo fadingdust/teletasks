@@ -124,13 +124,13 @@ public sealed class TelegramBotService : BackgroundService
             if (dryRun)
             {
                 await bot.SendMessage(chatId, RenderDryRun(task, match.Parameters),
-                    parseMode: ParseMode.Markdown, cancellationToken: ct);
+                    parseMode: ParseMode.Html, cancellationToken: ct);
                 return;
             }
 
             await bot.SendMessage(chatId,
-                $"→ Running `{task.Name}`{FormatParameterList(match.Parameters)}",
-                parseMode: ParseMode.Markdown,
+                $"→ Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(match.Parameters))}",
+                parseMode: ParseMode.Html,
                 cancellationToken: ct);
 
             var result = await _executor.ExecuteAsync(task, match.Parameters, ct);
@@ -234,11 +234,12 @@ public sealed class TelegramBotService : BackgroundService
             switch (artifact.Kind)
             {
                 case "text":
+                    var rawText = artifact.Text ?? string.Empty;
+                    if (string.IsNullOrEmpty(rawText)) rawText = "(empty)";
                     var body = string.IsNullOrWhiteSpace(artifact.Caption)
-                        ? artifact.Text ?? string.Empty
-                        : $"*{Escape(artifact.Caption)}*\n```\n{artifact.Text}\n```";
-                    if (string.IsNullOrEmpty(body)) body = "(empty)";
-                    await bot.SendMessage(chatId, body, parseMode: ParseMode.Markdown, cancellationToken: cancellationToken);
+                        ? $"<pre>{HtmlEscape(rawText)}</pre>"
+                        : $"<b>{HtmlEscape(artifact.Caption)}</b>\n<pre>{HtmlEscape(rawText)}</pre>";
+                    await bot.SendMessage(chatId, body, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                     break;
                 case "image":
                     {
@@ -285,10 +286,10 @@ public sealed class TelegramBotService : BackgroundService
     private static string RenderDryRun(TaskDefinition task, IReadOnlyDictionary<string, object?> parameters)
     {
         var sb = new StringBuilder();
-        sb.Append("*Dry run*: `").Append(Escape(task.Name)).AppendLine("`");
+        sb.Append("<b>Dry run</b>: <code>").Append(HtmlEscape(task.Name)).AppendLine("</code>");
         if (!string.IsNullOrWhiteSpace(task.Description))
         {
-            sb.Append("_").Append(Escape(task.Description)).AppendLine("_");
+            sb.Append("<i>").Append(HtmlEscape(task.Description)).AppendLine("</i>");
         }
         sb.AppendLine();
 
@@ -297,7 +298,8 @@ public sealed class TelegramBotService : BackgroundService
             sb.AppendLine("Parameters:");
             foreach (var (k, v) in parameters)
             {
-                sb.Append("  • ").Append(Escape(k)).Append(" = `").Append(Escape(v?.ToString() ?? "null")).AppendLine("`");
+                sb.Append("  • ").Append(HtmlEscape(k))
+                  .Append(" = <code>").Append(HtmlEscape(v?.ToString() ?? "null")).AppendLine("</code>");
             }
             sb.AppendLine();
         }
@@ -306,22 +308,22 @@ public sealed class TelegramBotService : BackgroundService
         {
             var cmd = ParameterTemplate.Apply(task.Command, parameters);
             var args = ParameterTemplate.ApplyAll(task.Args, parameters);
+            var line = new StringBuilder(cmd);
+            foreach (var a in args) line.Append(' ').Append(a);
             sb.AppendLine("Would run:");
-            sb.Append("```\n").Append(cmd);
-            foreach (var a in args) sb.Append(' ').Append(a);
-            sb.AppendLine().AppendLine("```");
+            sb.Append("<pre>").Append(HtmlEscape(line.ToString())).AppendLine("</pre>");
         }
         else
         {
             sb.AppendLine("(no command — output is collected directly)");
         }
 
-        sb.Append("Output type: `").Append(task.Output.Type).Append('`');
+        sb.Append("Output type: <code>").Append(task.Output.Type).Append("</code>");
         return sb.ToString();
     }
 
-    private static string Escape(string input) =>
-        input.Replace("_", "\\_").Replace("*", "\\*").Replace("`", "\\`");
+    private static string HtmlEscape(string input) =>
+        input.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
     private Task OnErrorAsync(Exception exception, HandleErrorSource source)
     {

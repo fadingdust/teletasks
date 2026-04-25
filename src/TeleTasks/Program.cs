@@ -9,15 +9,19 @@ using TeleTasks.Services;
 if (args.Length > 0 && args[0].Equals("discover", StringComparison.OrdinalIgnoreCase))
 {
     using var dcts = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; dcts.Cancel(); };
-    return await DiscoverCommand.RunAsync(args.Skip(1).ToArray(), dcts.Token);
+    ConsoleCancelEventHandler dh = (_, e) => { e.Cancel = true; dcts.Cancel(); };
+    Console.CancelKeyPress += dh;
+    try { return await DiscoverCommand.RunAsync(args.Skip(1).ToArray(), dcts.Token); }
+    finally { Console.CancelKeyPress -= dh; }
 }
 
 if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCase))
 {
     using var scts = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; scts.Cancel(); };
-    return await SetupCommand.RunAsync(args.Skip(1).ToArray(), scts.Token);
+    ConsoleCancelEventHandler sh = (_, e) => { e.Cancel = true; scts.Cancel(); };
+    Console.CancelKeyPress += sh;
+    try { return await SetupCommand.RunAsync(args.Skip(1).ToArray(), scts.Token); }
+    finally { Console.CancelKeyPress -= sh; }
 }
 
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
@@ -48,11 +52,21 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
     }
 
     using var setupCts = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; setupCts.Cancel(); };
-
-    var savePath = SetupCommand.DefaultSavePath;
-    var ok = await SetupCommand.RunInteractiveAsync(savePath, setupCts.Token);
-    if (!ok) return 1;
+    ConsoleCancelEventHandler onCancel = (_, e) => { e.Cancel = true; setupCts.Cancel(); };
+    Console.CancelKeyPress += onCancel;
+    try
+    {
+        var savePath = SetupCommand.DefaultSavePath;
+        var ok = await SetupCommand.RunInteractiveAsync(savePath, setupCts.Token);
+        if (!ok) return 1;
+    }
+    finally
+    {
+        // Must unsubscribe before `using var setupCts` disposes the CTS — otherwise
+        // a later Ctrl+C (during host.RunAsync) would call Cancel on a disposed
+        // CancellationTokenSource and throw ObjectDisposedException on the SIGINT thread.
+        Console.CancelKeyPress -= onCancel;
+    }
 
     ((IConfigurationRoot)builder.Configuration).Reload();
 }
