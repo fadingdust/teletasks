@@ -97,6 +97,12 @@ public sealed class TaskRegistry
                 throw new InvalidOperationException("Every task must have a non-empty 'name'.");
             }
 
+            if (task.Name.StartsWith('_'))
+            {
+                throw new InvalidOperationException(
+                    $"Task name '{task.Name}' starts with '_' which is reserved for built-in matcher routes.");
+            }
+
             if (!seen.Add(task.Name))
             {
                 throw new InvalidOperationException($"Duplicate task name '{task.Name}'.");

@@ -274,6 +274,30 @@ dotnet /path/to/TeleTasks.dll discover project -o /etc/teletasks/tasks.json
 
 Then in Telegram, `/reload` picks up the new tasks without restarting.
 
+## Don't be silent
+
+Three things make sure problems don't get swallowed:
+
+1. **Startup health check** — the bot pings Ollama as soon as it's connected
+   to Telegram. If Ollama is unreachable, or the configured model isn't
+   pulled, the bot logs a warning *and* sends a Telegram message to the first
+   allow-listed user with the exact `ollama pull <model>` command needed.
+   Disable with `Telegram:StartupNotificationsEnabled = false`.
+2. **Friendly runtime errors** — when a chat request fails because Ollama
+   doesn't have the model pulled (HTTP 404 / "not found") or isn't running
+   (connection refused), the bot replies with an actionable message rather
+   than the raw HTTP body.
+3. **Virtual router targets** — meta questions like "what tasks are
+   available?", "what can you do?", "help" route to the `/tasks` and `/help`
+   responses instead of being forced into a real task. This matters most
+   with very small models and a small task catalog: the matcher would
+   otherwise pick the only available task rather than admitting it doesn't
+   know.
+
+The matcher's response schema includes two reserved values, `_show_tasks` and
+`_show_help`, which the bot intercepts. Real tasks are not allowed to start
+with `_` (the registry rejects them at load).
+
 ## Built-in commands
 
 - `/help`, `/start` – usage

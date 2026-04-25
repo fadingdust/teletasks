@@ -8,21 +8,34 @@ namespace TeleTasks.Services;
 
 public sealed class TaskMatcher
 {
+    public const string ShowTasksRoute = "_show_tasks";
+    public const string ShowHelpRoute = "_show_help";
+
     private const string SystemPrompt = """
 You are a strict request router for a personal Linux assistant bot.
 
-Pick the single best-matching task from the catalog and extract any parameter
-values from the user message.
+Decide where to route the user's message:
+
+  • A REAL task name from the catalog — only when the user is clearly asking to
+    perform an action that one task explicitly does. Extract parameters from
+    the message into the "parameters" object.
+  • "_show_tasks" — when the user is asking what the bot can do, what tasks
+    exist, what's available, etc. (e.g. "What tasks are available?",
+    "list commands", "what can you do").
+  • "_show_help" — when the user is asking for help, instructions, or how to
+    use the bot.
+  • null — for greetings, chit-chat, or anything the bot can't handle.
 
 Rules:
 - Respond with a single JSON object matching the response schema. No prose.
-- If no task fits, set "task" to null and explain in "reasoning".
 - Only include parameter keys that the chosen task declares. Never invent
   parameters.
 - Use the parameter's declared type (string, integer, number, boolean).
 - If a required parameter is missing from the message, set "task" to null and
   ask for it in "reasoning".
-- Be conservative. If the user is just chatting, return null.
+- When in doubt between picking a real task and one of the virtual routes
+  ("_show_tasks", "_show_help", null), prefer the virtual route. It is much
+  worse to run the wrong task than to ask the user to clarify.
 """;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -74,6 +87,11 @@ Rules:
             return new TaskMatch(string.Empty, new Dictionary<string, object?>(), payload?.Reasoning);
         }
 
+        if (payload.Task == ShowTasksRoute || payload.Task == ShowHelpRoute)
+        {
+            return new TaskMatch(payload.Task, new Dictionary<string, object?>(), payload.Reasoning);
+        }
+
         var task = _registry.Find(payload.Task);
         if (task is null)
         {
@@ -89,6 +107,10 @@ Rules:
     private string BuildUserPrompt(string userMessage)
     {
         var sb = new StringBuilder();
+        sb.AppendLine("Virtual routes (always available):");
+        sb.AppendLine($"- {ShowTasksRoute}: route here when the user asks what tasks/commands exist");
+        sb.AppendLine($"- {ShowHelpRoute}: route here when the user asks for help or instructions");
+        sb.AppendLine();
         sb.AppendLine("Task catalog:");
         foreach (var task in _registry.Tasks)
         {
@@ -126,6 +148,8 @@ Rules:
         {
             taskNames.Add(t.Name);
         }
+        taskNames.Add(ShowTasksRoute);
+        taskNames.Add(ShowHelpRoute);
 
         return new JsonObject
         {

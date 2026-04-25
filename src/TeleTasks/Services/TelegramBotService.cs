@@ -18,6 +18,7 @@ public sealed class TelegramBotService : BackgroundService
     private readonly TaskRegistry _registry;
     private readonly TaskMatcher _matcher;
     private readonly TaskExecutor _executor;
+    private readonly OllamaClient _ollama;
     private readonly ILogger<TelegramBotService> _logger;
 
     private TelegramBotClient? _bot;
@@ -28,12 +29,14 @@ public sealed class TelegramBotService : BackgroundService
         TaskRegistry registry,
         TaskMatcher matcher,
         TaskExecutor executor,
+        OllamaClient ollama,
         ILogger<TelegramBotService> logger)
     {
         _options = options.Value;
         _registry = registry;
         _matcher = matcher;
         _executor = executor;
+        _ollama = ollama;
         _logger = logger;
     }
 
@@ -58,11 +61,86 @@ public sealed class TelegramBotService : BackgroundService
         _bot.OnError += OnErrorAsync;
         _bot.OnMessage += OnMessageAsync;
 
+        await CheckOllamaHealthAndNotifyAsync(stoppingToken);
+
         try
         {
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
         catch (OperationCanceledException) { }
+    }
+
+    private async Task CheckOllamaHealthAndNotifyAsync(CancellationToken cancellationToken)
+    {
+        string? warning = null;
+        try
+        {
+            var models = await _ollama.ListModelsAsync(cancellationToken);
+            if (models.Count == 0)
+            {
+                warning =
+                    $"⚠️ I'm online, but Ollama at <code>{HtmlEscape(_ollama.ConfiguredEndpoint)}</code> " +
+                    "reports no installed models.\n\n" +
+                    $"On the host machine run:\n<pre>ollama pull {HtmlEscape(_ollama.ConfiguredModel)}</pre>";
+                _logger.LogWarning("Ollama is reachable but has no models pulled.");
+            }
+            else if (!models.Contains(_ollama.ConfiguredModel, StringComparer.OrdinalIgnoreCase))
+            {
+                warning =
+                    $"⚠️ I'm online, but Ollama doesn't have model <code>{HtmlEscape(_ollama.ConfiguredModel)}</code> pulled.\n\n" +
+                    $"Available: <code>{HtmlEscape(string.Join(", ", models.Take(8)))}</code>\n\n" +
+                    $"On the host machine run:\n<pre>ollama pull {HtmlEscape(_ollama.ConfiguredModel)}</pre>";
+                _logger.LogWarning("Configured Ollama model '{Model}' is not pulled. Available: {Models}",
+                    _ollama.ConfiguredModel, string.Join(", ", models));
+            }
+            else
+            {
+                _logger.LogInformation("Ollama health: ok ({Model} pulled, {Count} model(s) available).",
+                    _ollama.ConfiguredModel, models.Count);
+            }
+        }
+        catch (OllamaUnreachableException ex)
+        {
+            warning =
+                $"⚠️ I'm online, but I can't reach Ollama at <code>{HtmlEscape(_ollama.ConfiguredEndpoint)}</code>.\n\n" +
+                $"<pre>{HtmlEscape(ex.Message)}</pre>\n\n" +
+                "Start it with:\n<pre>ollama serve</pre>";
+            _logger.LogWarning(ex, "Ollama is unreachable at startup.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Ollama health check failed unexpectedly.");
+        }
+
+        if (warning is not null)
+        {
+            await SendStartupNotificationAsync(warning, cancellationToken);
+        }
+    }
+
+    private async Task SendStartupNotificationAsync(string htmlBody, CancellationToken cancellationToken)
+    {
+        if (!_options.StartupNotificationsEnabled) return;
+
+        long? recipient = null;
+        if (_options.AllowedUserIds.Length > 0) recipient = _options.AllowedUserIds[0];
+        else if (_options.AllowedChatIds.Length > 0) recipient = _options.AllowedChatIds[0];
+
+        if (recipient is null)
+        {
+            _logger.LogWarning("Startup notification not sent: no AllowedUserIds or AllowedChatIds configured.");
+            return;
+        }
+
+        try
+        {
+            await _bot!.SendMessage(recipient.Value, htmlBody,
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send startup notification to {Recipient}", recipient);
+        }
     }
 
     private async Task OnMessageAsync(Message message, UpdateType updateType)
@@ -116,6 +194,17 @@ public sealed class TelegramBotService : BackgroundService
                     ? "I couldn't find a task that matches that. Try /tasks to see what I can do."
                     : $"No matching task: {reason}";
                 await bot.SendMessage(chatId, reply, cancellationToken: ct);
+                return;
+            }
+
+            if (match.TaskName == TaskMatcher.ShowTasksRoute)
+            {
+                await bot.SendMessage(chatId, BuildTaskList(), cancellationToken: ct);
+                return;
+            }
+            if (match.TaskName == TaskMatcher.ShowHelpRoute)
+            {
+                await bot.SendMessage(chatId, BuildHelp(), cancellationToken: ct);
                 return;
             }
 

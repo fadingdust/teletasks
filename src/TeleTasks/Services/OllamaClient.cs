@@ -35,6 +35,39 @@ public sealed class OllamaClient
     public Task<string> ChatStructuredAsync(string systemPrompt, string userPrompt, JsonNode schema, CancellationToken cancellationToken) =>
         ChatAsync(systemPrompt, userPrompt, format: schema, cancellationToken);
 
+    public string ConfiguredModel => _options.Model;
+
+    public string ConfiguredEndpoint => _options.Endpoint;
+
+    public async Task<List<string>> ListModelsAsync(CancellationToken cancellationToken)
+    {
+        using var http = _factory.CreateClient(HttpClientName);
+        http.BaseAddress ??= new Uri(_options.Endpoint.TrimEnd('/') + "/");
+        http.Timeout = TimeSpan.FromSeconds(Math.Min(_options.RequestTimeoutSeconds, 5));
+
+        try
+        {
+            var doc = await http.GetFromJsonAsync<JsonElement>("api/tags", cancellationToken);
+            if (!doc.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
+                return new List<string>();
+            return models.EnumerateArray()
+                .Where(m => m.TryGetProperty("name", out _))
+                .Select(m => m.GetProperty("name").GetString() ?? "")
+                .Where(s => s.Length > 0)
+                .ToList();
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new OllamaUnreachableException(
+                $"Could not reach Ollama at {_options.Endpoint}: {ex.Message}", ex);
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new OllamaUnreachableException(
+                $"Ollama at {_options.Endpoint} did not respond within the timeout.", ex);
+        }
+    }
+
     private async Task<string> ChatAsync(string systemPrompt, string userPrompt, object? format, CancellationToken cancellationToken)
     {
         using var http = _factory.CreateClient(HttpClientName);
@@ -54,19 +87,41 @@ public sealed class OllamaClient
             }
         };
 
-        using var response = await http.PostAsJsonAsync("api/chat", request, JsonOptions, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            _logger.LogError("Ollama returned {Status}: {Body}", (int)response.StatusCode, body);
-            throw new InvalidOperationException(
-                $"Ollama responded with HTTP {(int)response.StatusCode}: {body}");
+            response = await http.PostAsJsonAsync("api/chat", request, JsonOptions, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new OllamaUnreachableException(
+                $"Could not reach Ollama at {_options.Endpoint}: {ex.Message}", ex);
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(JsonOptions, cancellationToken)
-            ?? throw new InvalidOperationException("Empty response from Ollama.");
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("Ollama returned {Status}: {Body}", (int)response.StatusCode, body);
 
-        return payload.Message?.Content ?? string.Empty;
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound &&
+                    body.Contains("not found", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new OllamaModelMissingException(
+                        $"Ollama doesn't have model '{_options.Model}' pulled. " +
+                        $"On the host machine run:\n  ollama pull {_options.Model}",
+                        _options.Model);
+                }
+                throw new InvalidOperationException(
+                    $"Ollama responded with HTTP {(int)response.StatusCode}: {body}");
+            }
+
+            var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(JsonOptions, cancellationToken)
+                ?? throw new InvalidOperationException("Empty response from Ollama.");
+
+            return payload.Message?.Content ?? string.Empty;
+        }
     }
 
     private sealed class ChatRequest
