@@ -1,0 +1,86 @@
+{
+  "tasks": [
+    {
+      "name": "system_status",
+      "description": "Show CPU load, memory usage, and disk usage of the root filesystem.",
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "echo '== uptime =='; uptime; echo; echo '== memory =='; free -h; echo; echo '== disk =='; df -h /"
+      ],
+      "output": { "type": "Text" }
+    },
+    {
+      "name": "tail_log",
+      "description": "Tail the last N lines of a log file on disk.",
+      "parameters": [
+        { "name": "path",  "type": "string",  "required": true, "description": "Absolute path to the log file" },
+        { "name": "lines", "type": "integer", "default": 50,    "description": "How many lines to show" }
+      ],
+      "output": {
+        "type": "LogTail",
+        "path": "{path}",
+        "lines": "{lines}",
+        "caption": "{path}"
+      }
+    },
+    {
+      "name": "list_downloads",
+      "description": "List the files currently in the Downloads directory, newest first.",
+      "command": "/bin/bash",
+      "args": ["-c", "ls -lht ~/Downloads | head -n 30"],
+      "output": { "type": "Text" }
+    },
+    {
+      "name": "latest_screenshots",
+      "description": "Send the most recent screenshots from the screenshots folder.",
+      "parameters": [
+        { "name": "count", "type": "integer", "default": 3, "description": "How many screenshots to send" }
+      ],
+      "output": {
+        "type": "Images",
+        "directory": "/home/USER/Pictures/Screenshots",
+        "pattern": "*.png",
+        "sortBy": "newest",
+        "count": "{count}"
+      }
+    },
+    {
+      "name": "send_journal",
+      "description": "Send the current systemd journal as a file, optionally filtered by service.",
+      "parameters": [
+        { "name": "service", "type": "string", "required": false, "description": "Optional systemd unit name" },
+        { "name": "lines",   "type": "integer", "default": 500 }
+      ],
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "if [ -n \"{service}\" ]; then journalctl -u \"{service}\" -n {lines} --no-pager > /tmp/teletasks-journal.txt; else journalctl -n {lines} --no-pager > /tmp/teletasks-journal.txt; fi"
+      ],
+      "output": {
+        "type": "File",
+        "path": "/tmp/teletasks-journal.txt",
+        "caption": "journal {service}"
+      }
+    },
+    {
+      "name": "take_webcam_photo",
+      "description": "Capture a still frame from the default webcam and send it.",
+      "command": "/usr/bin/ffmpeg",
+      "args": [
+        "-y",
+        "-f", "v4l2",
+        "-video_size", "1280x720",
+        "-i", "/dev/video0",
+        "-frames:v", "1",
+        "/tmp/teletasks-webcam.jpg"
+      ],
+      "timeoutSeconds": 30,
+      "output": {
+        "type": "Image",
+        "path": "/tmp/teletasks-webcam.jpg",
+        "caption": "Webcam snapshot"
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "tasks": [
+    {
+      "name": "system_status",
+      "description": "Show CPU load, memory usage, and disk usage of the root filesystem.",
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "echo '== uptime =='; uptime; echo; echo '== memory =='; free -h; echo; echo '== disk =='; df -h /"
+      ],
+      "output": { "type": "Text" }
+    }
+  ]
+}
