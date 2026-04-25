@@ -36,22 +36,47 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
 
 ## Configure
 
-Copy the examples and fill them in:
+The first time you run the bot with no configuration, it launches an
+**interactive wizard** that walks you through:
+
+1. Your bot token (validated against Telegram's `getMe`)
+2. Your Telegram user ID — captured automatically by asking you to send any
+   message to your bot, then polling `getUpdates`. No need to look up the
+   numeric ID yourself.
+3. Ollama endpoint and model (queries `/api/tags` to show what's pulled)
+
+Answers are saved to `appsettings.Local.json` next to the binary. That file is
+already covered by `.gitignore` and is layered on top of `appsettings.json` at
+load time, so secrets never go into source control.
+
+Re-run the wizard later with:
 
 ```bash
-cp src/TeleTasks/appsettings.example.json src/TeleTasks/appsettings.json
+dotnet run --project src/TeleTasks -- setup
+# or, for a published binary:
+dotnet TeleTasks.dll setup
+```
+
+If you'd rather configure by hand, copy the example and edit it:
+
+```bash
+cp src/TeleTasks/appsettings.example.json src/TeleTasks/appsettings.Local.json
 cp src/TeleTasks/tasks.example.json       src/TeleTasks/tasks.json
 ```
 
-Set at minimum:
+Any setting can also be supplied via env vars prefixed with `TELETASKS_`
+(highest priority below the command line), e.g.
+`TELETASKS_Telegram__Token=...`. Configuration precedence (highest wins):
 
-- `Telegram:Token` — your bot token
-- `Telegram:AllowedUserIds` — your numeric Telegram user ID. Send any message to the
-  running bot and check the logs, or use `/whoami` after temporarily allow-listing
-  the chat.
+1. Command-line args (`--Telegram:Token=...`)
+2. `TELETASKS_*` env vars
+3. `appsettings.Local.json` (the wizard's output)
+4. `appsettings.{Environment}.json`
+5. `appsettings.json`
 
-Any setting can also be supplied via env vars prefixed with `TELETASKS_`, e.g.
-`TELETASKS_Telegram__Token=...`.
+If the bot starts with no token AND stdin is not a terminal (e.g. running under
+systemd), it logs an error and exits — it will not block waiting for input.
+Run `setup` interactively once, then start the service.
 
 ## Run
 

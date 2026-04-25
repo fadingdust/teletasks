@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -7,18 +8,54 @@ using TeleTasks.Services;
 
 if (args.Length > 0 && args[0].Equals("discover", StringComparison.OrdinalIgnoreCase))
 {
-    using var cts = new CancellationTokenSource();
-    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-    return await DiscoverCommand.RunAsync(args.Skip(1).ToArray(), cts.Token);
+    using var dcts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; dcts.Cancel(); };
+    return await DiscoverCommand.RunAsync(args.Skip(1).ToArray(), dcts.Token);
 }
 
-var builder = Host.CreateApplicationBuilder(args);
+if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCase))
+{
+    using var scts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; scts.Cancel(); };
+    return await SetupCommand.RunAsync(args.Skip(1).ToArray(), scts.Token);
+}
 
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory
+});
+
+// Host.CreateApplicationBuilder already loads appsettings.json, the env-specific
+// file, DOTNET_ env vars, and the command line. We layer on:
+//   - appsettings.Local.json (wizard output, gitignored)
+//   - TELETASKS_-prefixed env vars (deployment override)
+//   - command line (re-applied last so it always wins)
 builder.Configuration
-    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
+    .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables(prefix: "TELETASKS_")
     .AddCommandLine(args);
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
+{
+    if (Console.IsInputRedirected || Console.IsOutputRedirected)
+    {
+        Console.Error.WriteLine(
+            "Telegram:Token not configured and stdin/stdout are not a terminal.");
+        Console.Error.WriteLine(
+            "Run `dotnet run -- setup` once interactively, or set TELETASKS_Telegram__Token.");
+        return 1;
+    }
+
+    using var setupCts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; setupCts.Cancel(); };
+
+    var savePath = SetupCommand.DefaultSavePath;
+    var ok = await SetupCommand.RunInteractiveAsync(savePath, setupCts.Token);
+    if (!ok) return 1;
+
+    ((IConfigurationRoot)builder.Configuration).Reload();
+}
 
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
 builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection(OllamaOptions.SectionName));
