@@ -48,24 +48,103 @@ public static class TaskCatalogWriter
         return JsonSerializer.Deserialize<TaskCatalog>(fs, ReadOptions) ?? new TaskCatalog();
     }
 
-    public static int Merge(TaskCatalog catalog, IEnumerable<TaskDefinition> incoming)
+    public sealed record MergeResult(int Added, int Updated, int Renamed, int Removed);
+
+    /// <summary>
+    /// Re-run-safe merge for the discover commands.
+    ///
+    /// Each task carries a <see cref="TaskDefinition.Source"/> string that the detectors
+    /// set (e.g. "Makefile:build", "git:teletasks:status"). On re-run we use that as the
+    /// stable identity:
+    /// 1. Existing task with the same source as an incoming candidate is updated in place
+    ///    (description/command/args/parameters/output refreshed). Its <c>enabled</c> flag
+    ///    and (potentially hand-edited) <c>name</c> are preserved.
+    /// 2. Incoming candidate with no existing match is appended. Name conflicts get
+    ///    suffixed with _2, _3, ... so a hand-written task with the same name isn't
+    ///    overwritten.
+    /// 3. With <paramref name="forceReplace"/>, existing tasks whose source belongs to
+    ///    the same category as ANY incoming source are removed first. Category is the
+    ///    string before the LAST colon (so "git:reponame" stays separate from
+    ///    "git:other-repo"; "Makefile" matches all Makefile entries).
+    /// </summary>
+    public static MergeResult Merge(TaskCatalog catalog, IEnumerable<TaskDefinition> incoming, bool forceReplace = false)
     {
-        var existing = new HashSet<string>(catalog.Tasks.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
+        var incomingList = incoming.ToList();
         var added = 0;
-        foreach (var task in incoming)
+        var updated = 0;
+        var renamed = 0;
+        var removed = 0;
+
+        if (forceReplace)
         {
-            var name = task.Name;
-            var i = 2;
-            while (existing.Contains(name))
+            var categories = incomingList
+                .Where(t => !string.IsNullOrEmpty(t.Source))
+                .Select(t => SourceCategory(t.Source!))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            removed = catalog.Tasks.RemoveAll(t =>
+                !string.IsNullOrEmpty(t.Source) &&
+                categories.Contains(SourceCategory(t.Source!)));
+        }
+
+        foreach (var task in incomingList)
+        {
+            TaskDefinition? bySource = null;
+            if (!string.IsNullOrEmpty(task.Source))
             {
-                name = $"{task.Name}_{i++}";
+                bySource = catalog.Tasks.FirstOrDefault(t =>
+                    string.Equals(t.Source, task.Source, StringComparison.OrdinalIgnoreCase));
             }
-            task.Name = name;
-            existing.Add(name);
+
+            if (bySource is not null)
+            {
+                UpdateInPlace(bySource, task);
+                updated++;
+                continue;
+            }
+
+            var originalName = task.Name;
+            var attempt = task.Name;
+            var i = 2;
+            while (catalog.Tasks.Any(t => string.Equals(t.Name, attempt, StringComparison.OrdinalIgnoreCase)))
+            {
+                attempt = $"{originalName}_{i++}";
+            }
+            if (!string.Equals(attempt, originalName, StringComparison.OrdinalIgnoreCase))
+            {
+                renamed++;
+            }
+            task.Name = attempt;
             catalog.Tasks.Add(task);
             added++;
         }
-        return added;
+
+        return new MergeResult(added, updated, renamed, removed);
+    }
+
+    private static void UpdateInPlace(TaskDefinition existing, TaskDefinition incoming)
+    {
+        // Preserve user-set fields (Name and Enabled) — they may have hand-edits.
+        existing.Description = incoming.Description;
+        existing.Source = incoming.Source;
+        existing.Command = incoming.Command;
+        existing.WorkingDirectory = incoming.WorkingDirectory;
+        existing.TimeoutSeconds = incoming.TimeoutSeconds;
+        existing.Output = incoming.Output;
+
+        existing.Args.Clear();
+        existing.Args.AddRange(incoming.Args);
+
+        existing.Parameters.Clear();
+        existing.Parameters.AddRange(incoming.Parameters);
+
+        existing.Env.Clear();
+        foreach (var kv in incoming.Env) existing.Env[kv.Key] = kv.Value;
+    }
+
+    private static string SourceCategory(string source)
+    {
+        var idx = source.LastIndexOf(':');
+        return idx > 0 ? source[..idx] : source;
     }
 
     public static void Save(string path, TaskCatalog catalog)

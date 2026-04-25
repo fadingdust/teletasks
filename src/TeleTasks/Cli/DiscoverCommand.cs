@@ -119,9 +119,12 @@ public static class DiscoverCommand
         {
             var path = opts.OutputPath ?? Path.Combine(Directory.GetCurrentDirectory(), "tasks.json");
             var catalog = TaskCatalogWriter.Load(path);
-            var added = TaskCatalogWriter.Merge(catalog, definitions);
+            var result = TaskCatalogWriter.Merge(catalog, definitions, opts.ForceReplace);
             TaskCatalogWriter.Save(path, catalog);
-            Console.Error.WriteLine($"# wrote {added} task(s) to {path}");
+            Console.Error.WriteLine(
+                $"# wrote to {path}: " +
+                $"{result.Added} added, {result.Updated} updated, " +
+                $"{result.Renamed} renamed, {result.Removed} removed");
         }
         else
         {
@@ -302,6 +305,10 @@ Use plain English, no markdown, no command syntax. Reply with JSON only.
                 case "-r":
                     opts.Recursive = true;
                     break;
+                case "--force-replace":
+                    opts.ForceReplace = true;
+                    opts.Write = true;
+                    break;
                 default:
                     if (opts.Path is null && !args[i].StartsWith('-'))
                     {
@@ -333,8 +340,15 @@ Modes:
           [--recursive]   walk subdirectories
 
 Common options:
-  --write, -w             append discovered tasks to tasks.json (instead of stdout)
+  --write, -w             merge discovered tasks into tasks.json (instead of stdout).
+                          Re-running is safe: tasks are matched by their `source`
+                          field and updated in place. Hand-edited tasks (those
+                          without a source) are never touched.
   --output, -o PATH       write to a specific tasks.json path (implies --write)
+  --force-replace         before merging, remove every existing task whose source
+                          category matches an incoming source. Use when the source
+                          shape has changed (e.g. you renamed Makefile targets) and
+                          you want stale entries gone. Implies --write.
   --llm                   ask Ollama to refine descriptions (off by default)
   --no-llm                disable LLM (default)
 
@@ -367,5 +381,6 @@ Examples:
         public int? MaxMegabytes { get; set; }
         public string? Pattern { get; set; }
         public bool Recursive { get; set; }
+        public bool ForceReplace { get; set; }
     }
 }

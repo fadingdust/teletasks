@@ -26,6 +26,7 @@ public sealed class TaskCandidate
         {
             Name = SuggestedName,
             Description = Description,
+            Source = Source,
             Command = Command,
             WorkingDirectory = WorkingDirectory,
             Output = Output

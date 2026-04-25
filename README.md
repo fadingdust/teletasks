@@ -204,8 +204,47 @@ dotnet run --project src/TeleTasks -- discover logs --path ~/.cache/myapp --recu
 ```
 
 By default, output goes to **stdout** so you can review and pipe it. Add `-w` to
-**append** to `./tasks.json` (existing names get suffixed with `_2`, `_3`, ...
-so re-runs never clobber). Use `-o path/to/tasks.json` to write somewhere else.
+merge into `./tasks.json`, or `-o path/to/tasks.json` to write somewhere else.
+
+### Re-running is safe
+
+Each discovered task has a stable `source` field (e.g. `Makefile:build`,
+`git:teletasks:status`, `log:/var/log/syslog`). On re-run:
+
+- Existing tasks with the **same source** are **updated in place**. Their
+  `name` and `enabled` flag are preserved, so any hand-renaming or disabling
+  you've done sticks. Description, command, args, parameters, and output spec
+  are refreshed from the detector.
+- Tasks **without a source** (hand-written) are never touched.
+- New incoming tasks whose name collides with an existing hand-written task
+  get a `_2`, `_3`, ... suffix.
+
+That means you can run `discover project -w` after every change to your
+Makefile or scripts and the catalog stays clean — no duplicate `make_build_2`
+entries, no clobbering of the description you tweaked, no surprises for tasks
+you maintain by hand.
+
+The CLI prints a per-run summary:
+
+```
+# wrote to /home/me/code/myrepo/tasks.json: 0 added, 14 updated, 0 renamed, 0 removed
+```
+
+### Cleaning up stale entries
+
+If you rename or remove a Makefile target / justfile recipe / etc., the old
+discovered task hangs around because nothing claims its source. To wipe stale
+entries first:
+
+```bash
+dotnet run --project src/TeleTasks -- discover project --force-replace
+```
+
+This removes every existing task whose source category (the part of `source`
+before the last colon) matches one of the incoming sources, then merges
+fresh. So `discover project --force-replace` clears all `Makefile:*`,
+`justfile:*`, `package.json:*`, etc. entries before adding new ones.
+Hand-written tasks (no source) are still left alone.
 
 Discovery is **deterministic by default** — no LLM call is made. Add `--llm` to
 have Ollama (using the same `Ollama:Model` from appsettings) rewrite both the

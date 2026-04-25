@@ -22,6 +22,14 @@ public sealed class TaskDefinition
     [JsonIgnore]
     public bool IsEnabled => Enabled ?? true;
 
+    /// <summary>
+    /// Where this task originated. Set by discover commands (e.g. "Makefile:build",
+    /// "git:teletasks:status", "log:/var/log/syslog"). Empty/null means the task
+    /// is hand-managed and discover will not touch it on re-run.
+    /// </summary>
+    [JsonPropertyName("source")]
+    public string? Source { get; set; }
+
     [JsonPropertyName("command")]
     public string? Command { get; set; }
 
