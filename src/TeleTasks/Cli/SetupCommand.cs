@@ -48,11 +48,11 @@ public static class SetupCommand
         Console.WriteLine("TeleTasks setup");
         Console.WriteLine("===============");
         Console.WriteLine();
-        Console.WriteLine("This wizard will configure Telegram + Ollama and save the result to:");
+        Console.WriteLine($"Config dir: {UserConfigDirectory.Resolve()}");
+        Console.WriteLine($"This wizard will save your answers to:");
         Console.WriteLine($"  {savePath}");
         Console.WriteLine();
         Console.WriteLine("That file is loaded on top of appsettings.json so secrets stay out of git.");
-        Console.WriteLine("It's already covered by .gitignore.");
         Console.WriteLine();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(40) };

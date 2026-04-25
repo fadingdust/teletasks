@@ -64,6 +64,19 @@ info: TeleTasks.Services.TaskRegistry[0] Loaded 14 task(s) from /home/me/.config
 A `Local.json` next to the binary is still loaded if it exists (legacy
 installs), but the user-config-dir copy overrides it.
 
+To see exactly which paths the binary will use right now:
+
+```bash
+dotnet TeleTasks.dll where
+```
+
+Prints the resolved config dir, the Local.json path, the tasks.json path,
+and the full resolution chain (env vars + .NET special folders) so you can
+diagnose any mismatch in one command. The resolver uses
+`Environment.GetFolderPath(ApplicationData)` ahead of `$HOME`, so even a
+shell with `HOME=""` still lands at the user's real config directory via
+`getpwuid()`.
+
 ## Configure
 
 The first time you run the bot with no configuration, it launches an

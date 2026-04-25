@@ -24,6 +24,8 @@ public static class DiscoverCommand
         var rest = args.Skip(1).ToArray();
         var opts = ParseOptions(rest);
 
+        Console.Error.WriteLine($"# config dir: {UserConfigDirectory.Resolve()}");
+
         try
         {
             switch (mode)

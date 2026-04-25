@@ -24,6 +24,11 @@ if (args.Length > 0 && args[0].Equals("setup", StringComparison.OrdinalIgnoreCas
     finally { Console.CancelKeyPress -= sh; }
 }
 
+if (args.Length > 0 && args[0].Equals("where", StringComparison.OrdinalIgnoreCase))
+{
+    return WhereCommand.Run(args.Skip(1).ToArray());
+}
+
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 {
     Args = args,

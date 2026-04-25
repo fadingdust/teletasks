@@ -21,13 +21,21 @@ public static class UserConfigDirectory
         var xdg = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
         if (!string.IsNullOrWhiteSpace(xdg)) return Path.Combine(xdg, "teletasks");
 
+        // GetFolderPath resolves correctly even when $HOME is empty in the
+        // environment: on Linux/macOS it falls through to getpwuid(). Returns
+        // ~/.config on Linux, %APPDATA% on Windows, ~/Library/Application Support
+        // on macOS — all the right place for per-user app config.
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrWhiteSpace(appData))
+            return Path.Combine(appData, "teletasks");
+
         var home = Environment.GetEnvironmentVariable("HOME");
         if (!string.IsNullOrWhiteSpace(home))
             return Path.Combine(home, ".config", "teletasks");
 
-        var appData = Environment.GetEnvironmentVariable("APPDATA");
-        if (!string.IsNullOrWhiteSpace(appData))
-            return Path.Combine(appData, "teletasks");
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(profile))
+            return Path.Combine(profile, ".config", "teletasks");
 
         return AppContext.BaseDirectory;
     }
