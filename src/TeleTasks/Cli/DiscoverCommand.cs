@@ -135,14 +135,22 @@ public static class DiscoverCommand
             var catalog = new TaskCatalog();
             TaskCatalogWriter.Merge(catalog, definitions);
             Console.WriteLine(TaskCatalogWriter.Render(catalog));
+            Console.Error.WriteLine();
+            Console.Error.WriteLine(
+                $"# (preview only — re-run with -w to save to {UserConfigDirectory.TasksPath})");
         }
         return 0;
     }
 
     private static async Task PolishWithLlmAsync(IReadOnlyList<TaskCandidate> candidates, CancellationToken cancellationToken)
     {
-        var sp = BuildLlmServices();
+        var sp = BuildLlmServices(out var resolvedSources);
         var ollama = sp.GetRequiredService<OllamaClient>();
+        Console.Error.WriteLine($"# llm: model={ollama.ConfiguredModel} endpoint={ollama.ConfiguredEndpoint}");
+        foreach (var line in resolvedSources)
+        {
+            Console.Error.WriteLine($"#   {line}");
+        }
         const string system = """
 You write short, helpful one-line documentation for personal Linux tasks.
 
@@ -264,15 +272,24 @@ description out of the response (don't invent one).
         catch (JsonException) { }
     }
 
-    private static IServiceProvider BuildLlmServices()
+    private static IServiceProvider BuildLlmServices(out List<string> sources)
     {
-        var config = new ConfigurationBuilder()
-            .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("appsettings.json", optional: true)
-            .AddJsonFile("appsettings.Local.json", optional: true)
-            .AddJsonFile(UserConfigDirectory.LocalSettingsPath, optional: true)
-            .AddEnvironmentVariables(prefix: "TELETASKS_")
-            .Build();
+        sources = new List<string>();
+
+        var binAppsettings = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        var binLocal = Path.Combine(AppContext.BaseDirectory, "appsettings.Local.json");
+        var userLocal = UserConfigDirectory.LocalSettingsPath;
+
+        var builder = new ConfigurationBuilder();
+        builder.AddJsonFile(binAppsettings, optional: true, reloadOnChange: false);
+        sources.Add($"json: {binAppsettings} {(File.Exists(binAppsettings) ? "(loaded)" : "(missing, optional)")}");
+        builder.AddJsonFile(binLocal, optional: true, reloadOnChange: false);
+        sources.Add($"json: {binLocal} {(File.Exists(binLocal) ? "(loaded)" : "(missing, optional)")}");
+        builder.AddJsonFile(userLocal, optional: true, reloadOnChange: false);
+        sources.Add($"json: {userLocal} {(File.Exists(userLocal) ? "(loaded)" : "(missing, optional)")}");
+        builder.AddEnvironmentVariables(prefix: "TELETASKS_");
+        sources.Add("env: TELETASKS_*");
+        var config = builder.Build();
 
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddSimpleConsole(o => o.SingleLine = true));
