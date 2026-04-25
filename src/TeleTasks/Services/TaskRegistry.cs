@@ -40,17 +40,9 @@ public sealed class TaskRegistry
 
     public DateTime LoadedAtUtc => _loadedAtUtc;
 
-    public string ResolvedPath => ResolvePath();
-
     public void Load()
     {
-        var path = ResolvePath();
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException(
-                $"Task catalog not found at '{path}'. Set TaskCatalog:Path or place a tasks.json next to the binary.",
-                path);
-        }
+        var path = EnsureCatalog();
 
         using var stream = File.OpenRead(path);
         var catalog = JsonSerializer.Deserialize<TaskCatalog>(stream, JsonOptions)
@@ -66,40 +58,61 @@ public sealed class TaskRegistry
             _tasks.Count, path, _disabledTasks.Count);
     }
 
-    public TaskDefinition? Find(string name) =>
-        _tasks.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
-
-    private string ResolvePath()
+    /// <summary>
+    /// Always resolve the catalog to the user-config-dir copy. If it's missing,
+    /// seed it from the bundled bin default (so first-run users see the example
+    /// task), otherwise create an empty catalog. An absolute TaskCatalog:Path is
+    /// treated as user-pinned and not auto-created.
+    /// </summary>
+    private string EnsureCatalog()
     {
         var configured = _options.Path;
+
         if (Path.IsPathRooted(configured))
         {
+            if (!File.Exists(configured))
+            {
+                throw new FileNotFoundException(
+                    $"Task catalog not found at '{configured}' (TaskCatalog:Path is absolute; " +
+                    "TeleTasks won't bootstrap a default at an absolute path you set explicitly).",
+                    configured);
+            }
             return configured;
         }
 
-        // Prefer the user config directory (where `discover -w` writes by default,
-        // and where users edit by hand), falling back to ContentRoot then bin.
-        var userConfigPath = Path.Combine(UserConfigDirectory.Resolve(), configured);
-        if (File.Exists(userConfigPath))
-        {
-            return userConfigPath;
-        }
+        var target = Path.Combine(UserConfigDirectory.Resolve(), configured);
+        if (File.Exists(target)) return target;
 
-        var contentRootPath = Path.Combine(_env.ContentRootPath, configured);
-        if (File.Exists(contentRootPath))
-        {
-            return contentRootPath;
-        }
+        var dir = Path.GetDirectoryName(target);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
         var binPath = Path.Combine(AppContext.BaseDirectory, configured);
-        if (File.Exists(binPath))
+        if (File.Exists(binPath) && !string.Equals(binPath, target, StringComparison.OrdinalIgnoreCase))
         {
-            return binPath;
+            try
+            {
+                File.Copy(binPath, target);
+                _logger.LogInformation(
+                    "Seeded task catalog at {Target} from bundled default {Source}.",
+                    target, binPath);
+                return target;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Failed to seed {Target} from {Source}; loading directly from bin.",
+                    target, binPath);
+                return binPath;
+            }
         }
 
-        // Nothing exists yet — return the user-config path so a future write goes there.
-        return userConfigPath;
+        File.WriteAllText(target, "{\n  \"tasks\": []\n}\n");
+        _logger.LogInformation("Created empty task catalog at {Path}.", target);
+        return target;
     }
+
+    public TaskDefinition? Find(string name) =>
+        _tasks.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
 
     private static void Validate(TaskCatalog catalog)
     {
