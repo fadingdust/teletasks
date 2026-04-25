@@ -24,6 +24,15 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
 - Per-task timeout, environment vars, working directory.
 - Hot-reload the catalog at runtime with `/reload`.
 
+## Documentation
+
+| Page | What's in it |
+|---|---|
+| [docs/cookbook.md](docs/cookbook.md)             | Annotated `tasks.json` recipes for the common patterns (latest screenshots, log tail, render with sidecar metadata, long-running jobs, shell-wraps-python, etc.). Copy & adapt. |
+| [docs/discovery.md](docs/discovery.md)           | What `discover` does, the pipeline phases, what each log line means, every flag's effect. |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Diagnostic patterns: "captionFrom=no — why?", "wrapper isn't inheriting", "discover wrote to the wrong place", and the quick toolbox of `where` / `/dry` / `/latest`. |
+| [SPECS.md](SPECS.md)                             | Running ledger of what's shipped on `main`, what's on open feature branches, what's on the backlog, and the design decisions worth remembering. |
+
 ## Prerequisites
 
 - .NET 8 SDK
