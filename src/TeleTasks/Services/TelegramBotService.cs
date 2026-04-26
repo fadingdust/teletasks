@@ -424,7 +424,7 @@ public sealed class TelegramBotService : BackgroundService
             }
 
             var missingRequired = task.Parameters
-                .Where(p => p.Required && !HasUsableValue(p, match.Parameters, routedText, task.Name))
+                .Where(p => p.Required && !MissingValueGuard.HasUsableValue(p, match.Parameters, routedText, task.Name))
                 .ToList();
             if (missingRequired.Count > 0)
             {
@@ -790,60 +790,6 @@ public sealed class TelegramBotService : BackgroundService
         if (j.Killed) return "killed";
         if (j.ExitCode is int code) return code == 0 ? "ok" : $"exit {code}";
         return "exit unknown";
-    }
-
-    /// <summary>
-    /// A required parameter is "missing" when:
-    ///   - absent from the matcher's extracted values, or
-    ///   - present but null / empty whitespace (small LLMs sometimes emit ""
-    ///     to satisfy a schema-required field), or
-    ///   - it's a string the model probably hallucinated — i.e. the value
-    ///     doesn't appear (case-insensitive substring) anywhere in the
-    ///     user's original message.
-    /// We'd rather ask the user than run with a blank or made-up value. The
-    /// hallucination guard only fires for strings; numbers/bools/enums are
-    /// trusted because the model has structural reasons to pick valid values
-    /// for those (and "five" → 5 wouldn't pass a substring check anyway).
-    /// </summary>
-    private static bool HasUsableValue(TaskParameter p, IReadOnlyDictionary<string, object?> values, string userMessage, string? taskName = null)
-    {
-        if (!values.TryGetValue(p.Name, out var v)) return false;
-        if (v is null) return false;
-        if (v is not string s) return true;
-        if (string.IsNullOrWhiteSpace(s)) return false;
-
-        // Strings only: check that the value plausibly came from the user's
-        // message. Skip the check entirely when there's no user text (e.g.
-        // future programmatic calls) — fall back to the trim check above.
-        if (string.IsNullOrEmpty(userMessage)) return true;
-
-        // Strip the task name from the search space. If the user just typed
-        // the task name ("sh_run_local"), tokens of a hallucinated value
-        // ("run.sh" → "run", "sh") that happen to also be tokens of the
-        // task name shouldn't be accepted as "the user said it". After
-        // stripping, an empty residual means the user really only named the
-        // task — every required string param is missing.
-        var searchText = userMessage;
-        if (!string.IsNullOrEmpty(taskName))
-        {
-            searchText = searchText.Replace(taskName, " ", StringComparison.OrdinalIgnoreCase);
-        }
-        if (string.IsNullOrWhiteSpace(searchText)) return false;
-
-        // The matcher may legitimately paraphrase ("syslog" → "/var/log/syslog")
-        // so we only require that any token of the value (>= 3 chars) appears
-        // in the residual message. A path like "run.sh" tokenizes to "run"
-        // and "sh"; a phrase like "the syslog file" matches via "syslog".
-        var tokens = s.Split(new[] { ' ', '\t', '/', '\\', '.', '_', '-', ',' },
-                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                      .Where(t => t.Length >= 3)
-                      .ToArray();
-        if (tokens.Length == 0) return true; // value is too short to verify; trust it
-        foreach (var t in tokens)
-        {
-            if (searchText.Contains(t, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
     }
 
     private static string FormatElapsed(TimeSpan span)
