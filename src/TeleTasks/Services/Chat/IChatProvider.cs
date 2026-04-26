@@ -28,6 +28,19 @@ public interface IChatProvider
     /// <summary>Stable identifier used in <see cref="ChatId.Provider"/>.</summary>
     string Name { get; }
 
+    /// <summary>
+    /// Optional "primary" chat to send unsolicited bot-initiated messages to
+    /// (startup health warnings, etc.). Telegram returns the first
+    /// AllowedUserId / AllowedChatId; Discord would return the first
+    /// AllowedUserId. Null means "no obvious primary recipient, skip
+    /// unsolicited DMs." Returns null until <see cref="StartAsync"/>
+    /// completes.
+    /// </summary>
+    ChatId? DefaultRecipient { get; }
+
+    /// <summary>True once <see cref="StartAsync"/> has connected and the provider is ready to send/receive.</summary>
+    bool IsReady { get; }
+
     event Func<IncomingMessage, Task>? OnMessage;
 
     Task StartAsync(CancellationToken cancellationToken);

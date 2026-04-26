@@ -42,6 +42,20 @@ public sealed class TelegramChatProvider : IChatProvider
 
     public string Name => ProviderName;
 
+    public bool IsReady => _bot is not null;
+
+    public ChatId? DefaultRecipient
+    {
+        get
+        {
+            if (_options.AllowedUserIds.Length > 0)
+                return ChatId.FromTelegram(_options.AllowedUserIds[0]);
+            if (_options.AllowedChatIds.Length > 0)
+                return ChatId.FromTelegram(_options.AllowedChatIds[0]);
+            return null;
+        }
+    }
+
     public event Func<IncomingMessage, Task>? OnMessage;
 
     public async Task StartAsync(CancellationToken cancellationToken)

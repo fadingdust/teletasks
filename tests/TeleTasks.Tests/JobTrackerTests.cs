@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
 using TeleTasks.Services;
+using TeleTasks.Services.Chat;
 using Xunit;
 
 namespace TeleTasks.Tests;
@@ -290,17 +291,18 @@ public sealed class JobTrackerTests : IDisposable
         var tracker = NewTracker();
         var job = StartSleep(tracker);
 
-        tracker.AssignChat(job.Id, chatId: 42L);
+        tracker.AssignChat(job.Id, chatId: ChatId.FromTelegram(42L));
 
-        Assert.Equal(42L, tracker.Get(job.Id)!.ChatId);
-        Assert.Contains("\"chatId\": 42", File.ReadAllText(tracker.RegistryPath));
+        Assert.Equal(ChatId.FromTelegram(42L), tracker.Get(job.Id)!.ChatId);
+        // ChatId now persists in canonical "provider:id" form, not as a bare long.
+        Assert.Contains("\"chatId\": \"telegram:42\"", File.ReadAllText(tracker.RegistryPath));
     }
 
     [Fact]
     public void AssignChat_is_a_noop_for_unknown_id()
     {
         // Should not throw.
-        NewTracker().AssignChat(99999, 1L);
+        NewTracker().AssignChat(99999, ChatId.FromTelegram(1L));
     }
 
     [Fact]
@@ -388,5 +390,41 @@ public sealed class JobTrackerTests : IDisposable
         var second = StartSleep(tracker2);
 
         Assert.True(second.Id > first.Id);
+    }
+
+    [Fact]
+    public void LoadAndReconcile_reads_legacy_long_chat_ids_as_telegram_provider()
+    {
+        // Pre-multi-provider, jobs.json stored chatId as a bare long. The
+        // ChatIdJsonConverter accepts both forms; existing files survive
+        // the upgrade without any user action.
+        var registryPath = Path.Combine(_configDir, "jobs.json");
+        Directory.CreateDirectory(_configDir);
+        File.WriteAllText(registryPath, """
+            {
+              "nextId": 2,
+              "jobs": [
+                {
+                  "id": 1,
+                  "taskName": "legacy_task",
+                  "pid": 99999999,
+                  "logPath": "/tmp/nonexistent.log",
+                  "exitCodePath": "/tmp/nonexistent.exit",
+                  "startedAt": "2025-01-01T12:00:00Z",
+                  "finishedAt": "2025-01-01T12:00:01Z",
+                  "exitCode": 0,
+                  "chatId": 42,
+                  "seenArtifacts": [],
+                  "completionNotified": false
+                }
+              ]
+            }
+            """);
+
+        var tracker = NewTracker();
+        var job = tracker.Get(1);
+
+        Assert.NotNull(job);
+        Assert.Equal(ChatId.FromTelegram(42L), job!.ChatId);
     }
 }

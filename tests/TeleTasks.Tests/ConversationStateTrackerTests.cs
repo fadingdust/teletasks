@@ -1,5 +1,6 @@
 using TeleTasks.Models;
 using TeleTasks.Services;
+using TeleTasks.Services.Chat;
 using Xunit;
 
 namespace TeleTasks.Tests;
@@ -14,11 +15,16 @@ public class ConversationStateTrackerTests
         return t;
     }
 
+    // Tests originally used bare-long chat IDs; the tracker is now keyed by
+    // provider-qualified ChatId. This helper preserves the assertion shape
+    // without wrapping every literal in ChatId.FromTelegram(...).
+    private static ChatId Chat(long id) => ChatId.FromTelegram(id);
+
     [Fact]
     public void Get_returns_null_for_unknown_chat()
     {
         var tracker = new ConversationStateTracker();
-        Assert.Null(tracker.Get(999L));
+        Assert.Null(tracker.Get(Chat(999)));
     }
 
     [Fact]
@@ -26,11 +32,11 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var state = tracker.Begin(chatId: 1L, task,
+        var state = tracker.Begin(chatId: Chat(1), task,
             alreadyCollected: new Dictionary<string, object?>(),
             missingRequired: task.Parameters);
 
-        var fetched = tracker.Get(1L);
+        var fetched = tracker.Get(Chat(1));
         Assert.Same(state, fetched);
     }
 
@@ -42,7 +48,7 @@ public class ConversationStateTrackerTests
         var task = Task();
         var missing = task.Parameters.Where(p => p.Name == "path").ToList();
 
-        var state = tracker.Begin(1L, task, alreadyCollected, missing);
+        var state = tracker.Begin(Chat(1), task, alreadyCollected, missing);
 
         Assert.Equal(50L, state.Collected["lines"]);
         Assert.Single(state.Remaining);
@@ -54,11 +60,11 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var first  = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
-        var second = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
+        var first  = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
+        var second = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
 
         Assert.NotSame(first, second);
-        Assert.Same(second, tracker.Get(1L));
+        Assert.Same(second, tracker.Get(Chat(1)));
     }
 
     [Fact]
@@ -66,11 +72,11 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var a = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
-        var b = tracker.Begin(2L, task, new Dictionary<string, object?>(), task.Parameters);
+        var a = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
+        var b = tracker.Begin(Chat(2), task, new Dictionary<string, object?>(), task.Parameters);
 
-        Assert.Same(a, tracker.Get(1L));
-        Assert.Same(b, tracker.Get(2L));
+        Assert.Same(a, tracker.Get(Chat(1)));
+        Assert.Same(b, tracker.Get(Chat(2)));
         Assert.NotSame(a, b);
     }
 
@@ -79,17 +85,17 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
+        tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
 
-        Assert.True(tracker.Clear(1L));
-        Assert.Null(tracker.Get(1L));
+        Assert.True(tracker.Clear(Chat(1)));
+        Assert.Null(tracker.Get(Chat(1)));
     }
 
     [Fact]
     public void Clear_returns_false_for_unknown_chat()
     {
         var tracker = new ConversationStateTracker();
-        Assert.False(tracker.Clear(404L));
+        Assert.False(tracker.Clear(Chat(404)));
     }
 
     [Fact]
@@ -97,11 +103,11 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var state = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
+        var state = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
 
         var earlier = DateTime.UtcNow.AddMinutes(-5);
         state.LastTouchedUtc = earlier;
-        tracker.Touch(1L);
+        tracker.Touch(Chat(1));
 
         Assert.True(state.LastTouchedUtc > earlier);
     }
@@ -110,7 +116,7 @@ public class ConversationStateTrackerTests
     public void Touch_is_a_noop_for_unknown_chat()
     {
         // Should not throw.
-        new ConversationStateTracker().Touch(999L);
+        new ConversationStateTracker().Touch(Chat(999));
     }
 
     [Fact]
@@ -121,13 +127,13 @@ public class ConversationStateTrackerTests
         // checks expiry and returns null if expired.
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var state = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
+        var state = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
 
         state.LastTouchedUtc = DateTime.UtcNow - ConversationStateTracker.MaxIdle - TimeSpan.FromSeconds(1);
 
-        Assert.Null(tracker.Get(1L));
+        Assert.Null(tracker.Get(Chat(1)));
         // Subsequent Get also returns null (entry was removed, not just hidden).
-        Assert.Null(tracker.Get(1L));
+        Assert.Null(tracker.Get(Chat(1)));
     }
 
     [Fact]
@@ -135,11 +141,11 @@ public class ConversationStateTrackerTests
     {
         var tracker = new ConversationStateTracker();
         var task = Task();
-        var state = tracker.Begin(1L, task, new Dictionary<string, object?>(), task.Parameters);
+        var state = tracker.Begin(Chat(1), task, new Dictionary<string, object?>(), task.Parameters);
 
         // 10 seconds inside the window — should still be alive.
         state.LastTouchedUtc = DateTime.UtcNow - ConversationStateTracker.MaxIdle + TimeSpan.FromSeconds(10);
 
-        Assert.Same(state, tracker.Get(1L));
+        Assert.Same(state, tracker.Get(Chat(1)));
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using TeleTasks.Models;
+using TeleTasks.Services.Chat;
 
 namespace TeleTasks.Services;
 
@@ -10,14 +11,17 @@ namespace TeleTasks.Services;
 ///
 /// State self-expires after <see cref="MaxIdle"/> so a user who walks away
 /// mid-collection isn't trapped forever; the next message starts fresh.
+///
+/// Keyed by <see cref="ChatId"/> so a Telegram chat and a (future) Discord
+/// channel with the same numeric id stay independent.
 /// </summary>
 public sealed class ConversationStateTracker
 {
     public static readonly TimeSpan MaxIdle = TimeSpan.FromMinutes(15);
 
-    private readonly ConcurrentDictionary<long, PendingTaskState> _states = new();
+    private readonly ConcurrentDictionary<ChatId, PendingTaskState> _states = new();
 
-    public PendingTaskState? Get(long chatId)
+    public PendingTaskState? Get(ChatId chatId)
     {
         if (!_states.TryGetValue(chatId, out var state)) return null;
         if (DateTime.UtcNow - state.LastTouchedUtc > MaxIdle)
@@ -28,7 +32,7 @@ public sealed class ConversationStateTracker
         return state;
     }
 
-    public PendingTaskState Begin(long chatId, TaskDefinition task,
+    public PendingTaskState Begin(ChatId chatId, TaskDefinition task,
         IReadOnlyDictionary<string, object?> alreadyCollected,
         IEnumerable<TaskParameter> missingRequired)
     {
@@ -44,7 +48,7 @@ public sealed class ConversationStateTracker
         return state;
     }
 
-    public void Touch(long chatId)
+    public void Touch(ChatId chatId)
     {
         if (_states.TryGetValue(chatId, out var state))
         {
@@ -52,7 +56,7 @@ public sealed class ConversationStateTracker
         }
     }
 
-    public bool Clear(long chatId) => _states.TryRemove(chatId, out _);
+    public bool Clear(ChatId chatId) => _states.TryRemove(chatId, out _);
 }
 
 public sealed class PendingTaskState

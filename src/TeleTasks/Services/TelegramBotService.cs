@@ -9,6 +9,9 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
+// Disambiguating alias: Telegram.Bot.Types also exports a type named ChatId,
+// so the local provider-qualified ChatId would otherwise be shadowed.
+using ProviderChatId = TeleTasks.Services.Chat.ChatId;
 
 namespace TeleTasks.Services;
 
@@ -124,7 +127,8 @@ public sealed class TelegramBotService : BackgroundService
         // Finished+already-notified jobs are no-ops below, so the cap is fine.
         foreach (var job in _jobs.List(50))
         {
-            if (job.ChatId is not long chatId) continue;
+            if (job.ChatId is not { } chatRef) continue;
+            if (!long.TryParse(chatRef.Id, out var chatId)) continue;
             if (job.Task is null) continue;
 
             var output = job.Task.Output;
@@ -327,7 +331,7 @@ public sealed class TelegramBotService : BackgroundService
             // a real slash command (in which case we cancel the conversation
             // and route the command). A user-typed path like /var/log/syslog
             // looks slash-command-shaped but is actually their answer.
-            var pending = _conversation.Get(chatId);
+            var pending = _conversation.Get(ProviderChatId.FromTelegram(chatId));
             var isCommand = SlashCommand.IsCommand(text);
             if (pending is not null && !isCommand)
             {
@@ -336,7 +340,7 @@ public sealed class TelegramBotService : BackgroundService
             }
             if (isCommand && pending is not null)
             {
-                _conversation.Clear(chatId);
+                _conversation.Clear(ProviderChatId.FromTelegram(chatId));
                 await bot.SendMessage(chatId,
                     $"Cancelled the pending {pending.Task.Name}.",
                     cancellationToken: ct);
@@ -431,7 +435,7 @@ public sealed class TelegramBotService : BackgroundService
                 .ToList();
             if (missingRequired.Count > 0)
             {
-                var state = _conversation.Begin(chatId, task, match.Parameters, missingRequired);
+                var state = _conversation.Begin(ProviderChatId.FromTelegram(chatId), task, match.Parameters, missingRequired);
                 await bot.SendMessage(chatId,
                     $"→ <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
                     "Send each one in turn, or /cancel to abort.",
@@ -450,7 +454,7 @@ public sealed class TelegramBotService : BackgroundService
             // where to push new artifacts and the completion summary.
             if (result.JobId is int newJobId)
             {
-                _jobs.AssignChat(newJobId, chatId);
+                _jobs.AssignChat(newJobId, ProviderChatId.FromTelegram(chatId));
             }
             await SendResultAsync(chatId, result, ct);
         }
@@ -875,14 +879,14 @@ public sealed class TelegramBotService : BackgroundService
         if (state.Remaining.Count == 0)
         {
             // Defensive: shouldn't happen, but if it does, just clear and ignore.
-            _conversation.Clear(chatId);
+            _conversation.Clear(ProviderChatId.FromTelegram(chatId));
             return;
         }
 
         var current = state.Remaining.Peek();
         if (!ParameterValueParser.TryParse(current, text, out var value, out var error))
         {
-            _conversation.Touch(chatId);
+            _conversation.Touch(ProviderChatId.FromTelegram(chatId));
             await bot.SendMessage(chatId,
                 $"⚠️ {HtmlEscape(error ?? "Invalid value.")} Try again, or /cancel.",
                 parseMode: ParseMode.Html, cancellationToken: cancellationToken);
@@ -891,7 +895,7 @@ public sealed class TelegramBotService : BackgroundService
 
         state.Remaining.Dequeue();
         state.Collected[current.Name] = value;
-        _conversation.Touch(chatId);
+        _conversation.Touch(ProviderChatId.FromTelegram(chatId));
 
         if (state.Remaining.Count > 0)
         {
@@ -902,7 +906,7 @@ public sealed class TelegramBotService : BackgroundService
         // All required params collected — execute and clear.
         var task = state.Task;
         var collected = new Dictionary<string, object?>(state.Collected, StringComparer.OrdinalIgnoreCase);
-        _conversation.Clear(chatId);
+        _conversation.Clear(ProviderChatId.FromTelegram(chatId));
 
         await bot.SendMessage(chatId,
             $"→ Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(collected))}",

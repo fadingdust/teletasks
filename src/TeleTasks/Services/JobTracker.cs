@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
+using TeleTasks.Services.Chat;
 
 namespace TeleTasks.Services;
 
@@ -224,7 +225,7 @@ public sealed class JobTracker
         if (changed) Persist();
     }
 
-    public void AssignChat(int id, long chatId)
+    public void AssignChat(int id, ChatId chatId)
     {
         if (!_jobs.TryGetValue(id, out var job)) return;
         if (job.ChatId == chatId) return;
