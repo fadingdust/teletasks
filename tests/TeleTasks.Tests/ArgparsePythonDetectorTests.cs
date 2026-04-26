@@ -348,10 +348,12 @@ public sealed class ArgparsePythonDetectorTests : IDisposable
         Directory.CreateDirectory(binDir);
         var fake = Path.Combine(binDir, "python");
         File.WriteAllText(fake, "#!/bin/sh\nexec python3 \"$@\"\n");
+#pragma warning disable CA1416  // Linux-only test infrastructure; gated by RequirePython() probe upstream
         File.SetUnixFileMode(fake,
             UnixFileMode.UserRead    | UnixFileMode.UserWrite    | UnixFileMode.UserExecute   |
             UnixFileMode.GroupRead   | UnixFileMode.GroupExecute |
             UnixFileMode.OtherRead   | UnixFileMode.OtherExecute);
+#pragma warning restore CA1416
         return fake;
     }
 }

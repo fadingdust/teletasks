@@ -323,15 +323,18 @@ public sealed class TelegramBotService : BackgroundService
         try
         {
             // If we're in the middle of collecting parameters from this user, the
-            // next non-slash message is the value for the current parameter. A
-            // slash command falls through and clears the pending state below.
+            // next message is the value for the current parameter — UNLESS it's
+            // a real slash command (in which case we cancel the conversation
+            // and route the command). A user-typed path like /var/log/syslog
+            // looks slash-command-shaped but is actually their answer.
             var pending = _conversation.Get(chatId);
-            if (pending is not null && !text.StartsWith('/'))
+            var isCommand = SlashCommand.IsCommand(text);
+            if (pending is not null && !isCommand)
             {
                 await ContinueParameterCollectionAsync(chatId, pending, text, ct);
                 return;
             }
-            if (text.StartsWith('/') && pending is not null)
+            if (isCommand && pending is not null)
             {
                 _conversation.Clear(chatId);
                 await bot.SendMessage(chatId,
@@ -354,7 +357,7 @@ public sealed class TelegramBotService : BackgroundService
                     return;
                 }
             }
-            else if (text.StartsWith('/'))
+            else if (isCommand)
             {
                 await HandleCommandAsync(chatId, text, ct);
                 return;
