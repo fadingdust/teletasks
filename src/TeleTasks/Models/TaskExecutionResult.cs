@@ -14,6 +14,8 @@ public sealed class TaskExecutionResult
 
     public string? ErrorMessage { get; set; }
 
+    public int? JobId { get; set; }
+
     public List<OutputArtifact> Artifacts { get; } = new();
 }
 

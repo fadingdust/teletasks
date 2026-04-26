@@ -11,15 +11,18 @@ public sealed class TaskExecutor
 {
     private readonly TaskCatalogOptions _options;
     private readonly OutputCollector _output;
+    private readonly JobTracker _jobs;
     private readonly ILogger<TaskExecutor> _logger;
 
     public TaskExecutor(
         IOptions<TaskCatalogOptions> options,
         OutputCollector output,
+        JobTracker jobs,
         ILogger<TaskExecutor> logger)
     {
         _options = options.Value;
         _output = output;
+        _jobs = jobs;
         _logger = logger;
     }
 
@@ -82,6 +85,11 @@ public sealed class TaskExecutor
             };
         }
 
+        if (task.IsLongRunning)
+        {
+            return StartLongRunning(task, resolved);
+        }
+
         string stdout = string.Empty;
         string stderr = string.Empty;
         int exitCode = 0;
@@ -124,6 +132,70 @@ public sealed class TaskExecutor
         }
 
         return result;
+    }
+
+    private TaskExecutionResult StartLongRunning(TaskDefinition task, IReadOnlyDictionary<string, object?> resolved)
+    {
+        if (string.IsNullOrWhiteSpace(task.Command))
+        {
+            return new TaskExecutionResult
+            {
+                Success = false,
+                ErrorMessage = $"Task '{task.Name}' is marked longRunning but has no command."
+            };
+        }
+
+        var resolvedTask = WithResolvedWorkingDir(task, resolved);
+        var command = ParameterTemplate.Apply(task.Command, resolved);
+        var args = ParameterTemplate.ApplyAll(task.Args, resolved).ToList();
+
+        try
+        {
+            var job = _jobs.Start(resolvedTask, resolved, command, args);
+            var result = new TaskExecutionResult
+            {
+                Success = true,
+                ExitCode = 0,
+                JobId = job.Id
+            };
+            result.Artifacts.Add(new OutputArtifact("text", null, null,
+                $"Started job {job.Id} ({task.Name}, pid {job.Pid}).\n" +
+                $"Log: {job.LogPath}\n" +
+                $"Use /job {job.Id} to check progress, /stop {job.Id} to kill."));
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start long-running task '{Task}'", task.Name);
+            return new TaskExecutionResult
+            {
+                Success = false,
+                ErrorMessage = $"Could not start long-running task: {ex.Message}"
+            };
+        }
+    }
+
+    private TaskDefinition WithResolvedWorkingDir(TaskDefinition task, IReadOnlyDictionary<string, object?> parameters)
+    {
+        var workingDir = task.WorkingDirectory ?? _options.WorkingDirectory;
+        if (string.IsNullOrWhiteSpace(workingDir)) return task;
+        var resolved = ParameterTemplate.Apply(workingDir, parameters);
+        if (string.Equals(resolved, task.WorkingDirectory, StringComparison.Ordinal)) return task;
+        return new TaskDefinition
+        {
+            Name = task.Name,
+            Description = task.Description,
+            Enabled = task.Enabled,
+            Source = task.Source,
+            Command = task.Command,
+            Args = task.Args.ToList(),
+            WorkingDirectory = resolved,
+            Env = new Dictionary<string, string>(task.Env),
+            TimeoutSeconds = task.TimeoutSeconds,
+            LongRunning = task.LongRunning,
+            Parameters = task.Parameters.ToList(),
+            Output = task.Output
+        };
     }
 
     private Dictionary<string, object?> ResolveParameters(

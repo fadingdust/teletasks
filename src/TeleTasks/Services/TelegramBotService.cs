@@ -19,6 +19,8 @@ public sealed class TelegramBotService : BackgroundService
     private readonly TaskMatcher _matcher;
     private readonly TaskExecutor _executor;
     private readonly OllamaClient _ollama;
+    private readonly OutputCollector _output;
+    private readonly JobTracker _jobs;
     private readonly ILogger<TelegramBotService> _logger;
 
     private TelegramBotClient? _bot;
@@ -30,6 +32,8 @@ public sealed class TelegramBotService : BackgroundService
         TaskMatcher matcher,
         TaskExecutor executor,
         OllamaClient ollama,
+        OutputCollector output,
+        JobTracker jobs,
         ILogger<TelegramBotService> logger)
     {
         _options = options.Value;
@@ -37,6 +41,8 @@ public sealed class TelegramBotService : BackgroundService
         _matcher = matcher;
         _executor = executor;
         _ollama = ollama;
+        _output = output;
+        _jobs = jobs;
         _logger = logger;
     }
 
@@ -65,9 +71,144 @@ public sealed class TelegramBotService : BackgroundService
 
         try
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            await RunJobNotifierLoopAsync(stoppingToken);
         }
         catch (OperationCanceledException) { }
+    }
+
+    /// <summary>
+    /// Periodically walks the job registry and, for jobs that originated from
+    /// a chat, pushes:
+    ///   - any new output artifacts since the last poll (progressive)
+    ///   - a one-time completion summary when the job transitions to finished
+    /// Runs in the same task as ExecuteAsync; the bot's OnMessage handler
+    /// fires independently on its own thread, so user commands aren't blocked.
+    /// </summary>
+    private async Task RunJobNotifierLoopAsync(CancellationToken ct)
+    {
+        var pollSeconds = _options.JobPollSeconds;
+        if (pollSeconds <= 0)
+        {
+            _logger.LogInformation("Job poll disabled (Telegram:JobPollSeconds <= 0). Sleeping forever.");
+            await Task.Delay(Timeout.Infinite, ct);
+            return;
+        }
+
+        var interval = TimeSpan.FromSeconds(pollSeconds);
+        _logger.LogInformation("Job notifier loop running every {Seconds}s.", pollSeconds);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await PollJobsOnceAsync(ct);
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Job notifier iteration failed");
+            }
+
+            try { await Task.Delay(interval, ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private async Task PollJobsOnceAsync(CancellationToken ct)
+    {
+        _jobs.Refresh();
+        // List() returns active first, then finished by recency; cap at 50.
+        // Finished+already-notified jobs are no-ops below, so the cap is fine.
+        foreach (var job in _jobs.List(50))
+        {
+            if (job.ChatId is not long chatId) continue;
+            if (job.Task is null) continue;
+
+            var output = job.Task.Output;
+            if (output is not null && output.Type is not TaskOutputType.Text)
+            {
+                await PushNewArtifactsAsync(chatId, job, ct);
+            }
+
+            if (job.IsFinished && !job.CompletionNotified)
+            {
+                await PushCompletionAsync(chatId, job, ct);
+            }
+        }
+    }
+
+    private async Task PushNewArtifactsAsync(long chatId, JobRecord job, CancellationToken ct)
+    {
+        TaskExecutionResult result;
+        try
+        {
+            result = await _executor.EvaluateOutputAsync(job.Task!, job.Parameters, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Progressive evaluate failed for job {Id}", job.Id);
+            return;
+        }
+
+        var seen = new HashSet<string>(job.SeenArtifactPaths, StringComparer.Ordinal);
+        var fresh = new List<OutputArtifact>();
+        foreach (var artifact in result.Artifacts)
+        {
+            if (string.IsNullOrEmpty(artifact.Path)) continue; // text-only: skip
+            if (seen.Contains(artifact.Path)) continue;
+            try
+            {
+                // mtime stable for at least one tick → file is settled. Anything
+                // older than the job's start belongs to a previous run.
+                var mtime = File.GetLastWriteTimeUtc(artifact.Path);
+                if (mtime < job.StartedAtUtc) continue;
+            }
+            catch { continue; }
+            fresh.Add(artifact);
+        }
+        if (fresh.Count == 0) return;
+
+        // Unsolicited pushes need to identify the job — when an image lands in
+        // chat 30s after you asked, you want to know which run produced it
+        // without scrolling back. Prepend a one-line tag to each caption.
+        var jobTag = $"Job {job.Id} • {job.TaskName}";
+        var bundle = new TaskExecutionResult { Success = true };
+        foreach (var a in fresh)
+        {
+            var caption = string.IsNullOrEmpty(a.Caption) ? jobTag : $"{jobTag}\n{a.Caption}";
+            bundle.Artifacts.Add(a with { Caption = caption });
+        }
+        try
+        {
+            await SendResultAsync(chatId, bundle, ct);
+            _jobs.RecordSeenArtifacts(job.Id,
+                fresh.Where(a => !string.IsNullOrEmpty(a.Path)).Select(a => a.Path!));
+            _logger.LogInformation("Pushed {Count} new artifact(s) for job {Id}.", fresh.Count, job.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to push new artifacts for job {Id}; will retry next poll.", job.Id);
+        }
+    }
+
+    private async Task PushCompletionAsync(long chatId, JobRecord job, CancellationToken ct)
+    {
+        var bot = _bot!;
+        var summary = new StringBuilder();
+        summary.Append("✅ Job ").Append(job.Id).Append(" <code>")
+               .Append(HtmlEscape(job.TaskName)).Append("</code> ")
+               .Append(HtmlEscape(FormatJobExit(job)))
+               .Append(" after ").Append(HtmlEscape(FormatElapsed(job.Elapsed))).Append('.');
+        try
+        {
+            await bot.SendMessage(chatId, summary.ToString(), parseMode: ParseMode.Html, cancellationToken: ct);
+            _jobs.MarkCompletionNotified(job.Id);
+            _logger.LogInformation("Pushed completion summary for job {Id}.", job.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to push completion for job {Id}; will retry next poll.", job.Id);
+        }
     }
 
     private async Task CheckOllamaHealthAndNotifyAsync(CancellationToken cancellationToken)
@@ -213,6 +354,16 @@ public sealed class TelegramBotService : BackgroundService
                 await SendResultsAsync(chatId, requested, ct);
                 return;
             }
+            if (match.TaskName == TaskMatcher.ShowJobsRoute)
+            {
+                await SendJobsListAsync(chatId, ct);
+                return;
+            }
+            if (match.TaskName == TaskMatcher.CheckLatestJobRoute)
+            {
+                await SendLatestJobStatusAsync(chatId, ct);
+                return;
+            }
 
             var task = _registry.Find(match.TaskName)!;
 
@@ -229,6 +380,12 @@ public sealed class TelegramBotService : BackgroundService
                 cancellationToken: ct);
 
             var result = await _executor.ExecuteAsync(task, match.Parameters, ct);
+            // Bind the originating chat to this job so the notifier loop knows
+            // where to push new artifacts and the completion summary.
+            if (result.JobId is int newJobId)
+            {
+                _jobs.AssignChat(newJobId, chatId);
+            }
             await SendResultAsync(chatId, result, ct);
         }
         catch (Exception ex)
@@ -275,6 +432,15 @@ public sealed class TelegramBotService : BackgroundService
                     await SendResultsAsync(chatId, arg, cancellationToken);
                     break;
                 }
+            case "/jobs":
+                await SendJobsListAsync(chatId, cancellationToken);
+                break;
+            case "/job":
+                await HandleJobCommandAsync(chatId, text, cancellationToken);
+                break;
+            case "/stop":
+                await HandleStopCommandAsync(chatId, text, cancellationToken);
+                break;
             default:
                 await bot.SendMessage(chatId, "Unknown command. Try /help.", cancellationToken: cancellationToken);
                 break;
@@ -345,15 +511,238 @@ public sealed class TelegramBotService : BackgroundService
         await SendResultAsync(chatId, result, cancellationToken);
     }
 
+    private async Task HandleJobCommandAsync(long chatId, string text, CancellationToken cancellationToken)
+    {
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        {
+            await SendJobsListAsync(chatId, cancellationToken);
+            return;
+        }
+        await SendJobStatusAsync(chatId, id, cancellationToken);
+    }
+
+    private async Task HandleStopCommandAsync(long chatId, string text, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        {
+            await bot.SendMessage(chatId, "Usage: /stop <job-id>. See /jobs for IDs.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        var job = _jobs.Get(id);
+        if (job is null)
+        {
+            await bot.SendMessage(chatId, $"No job with id {id}.", cancellationToken: cancellationToken);
+            return;
+        }
+        if (job.IsFinished)
+        {
+            await bot.SendMessage(chatId, $"Job {id} ({job.TaskName}) is already finished.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        var stopped = _jobs.Stop(id);
+        await bot.SendMessage(chatId,
+            stopped
+                ? $"Sent kill to job {id} ({job.TaskName}, pid {job.Pid})."
+                : $"Could not stop job {id}. See logs.",
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task SendJobsListAsync(long chatId, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+        _jobs.Refresh();
+        var jobs = _jobs.List();
+        if (jobs.Count == 0)
+        {
+            await bot.SendMessage(chatId, "No jobs yet. Tasks with <code>longRunning: true</code> show up here once started.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        var active = jobs.Where(j => !j.IsFinished).ToList();
+        var finished = jobs.Where(j => j.IsFinished).Take(10).ToList();
+
+        if (active.Count > 0)
+        {
+            sb.AppendLine("<b>Active</b>:");
+            foreach (var j in active)
+            {
+                sb.Append("• /job ").Append(j.Id).Append(" — <code>")
+                  .Append(HtmlEscape(j.TaskName)).Append("</code> running ")
+                  .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+            }
+        }
+        if (finished.Count > 0)
+        {
+            if (active.Count > 0) sb.AppendLine();
+            sb.AppendLine("<b>Recent</b>:");
+            foreach (var j in finished)
+            {
+                var exit = FormatJobExit(j);
+                sb.Append("• /job ").Append(j.Id).Append(" — <code>")
+                  .Append(HtmlEscape(j.TaskName)).Append("</code> ")
+                  .Append(HtmlEscape(exit)).Append(" after ")
+                  .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+            }
+        }
+
+        await bot.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+    }
+
+    private async Task SendLatestJobStatusAsync(long chatId, CancellationToken cancellationToken)
+    {
+        _jobs.Refresh();
+        var latest = _jobs.List(50)
+            .OrderByDescending(j => !j.IsFinished)
+            .ThenByDescending(j => j.StartedAtUtc)
+            .FirstOrDefault();
+        if (latest is null)
+        {
+            await _bot!.SendMessage(chatId, "No jobs yet.", cancellationToken: cancellationToken);
+            return;
+        }
+        await SendJobStatusAsync(chatId, latest.Id, cancellationToken);
+    }
+
+    private async Task SendJobStatusAsync(long chatId, int id, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+        _jobs.Refresh();
+        var job = _jobs.Get(id);
+        if (job is null)
+        {
+            await bot.SendMessage(chatId, $"No job with id {id}.", cancellationToken: cancellationToken);
+            return;
+        }
+
+        var header = new StringBuilder();
+        header.Append("<b>Job ").Append(job.Id).Append("</b>: <code>")
+              .Append(HtmlEscape(job.TaskName)).Append("</code>\n");
+        if (job.IsFinished)
+        {
+            var exit = FormatJobExit(job);
+            header.Append(HtmlEscape($"finished {FormatElapsed(job.Elapsed)} ago, {exit}"))
+                  .Append('\n');
+        }
+        else
+        {
+            header.Append("running for ").Append(HtmlEscape(FormatElapsed(job.Elapsed)))
+                  .Append(" (pid ").Append(job.Pid).Append(")\n");
+        }
+        header.Append("log: <code>").Append(HtmlEscape(job.LogPath)).Append("</code>");
+        await bot.SendMessage(chatId, header.ToString(), parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+
+        var tail = _jobs.TailLog(id, 30);
+        if (!string.IsNullOrWhiteSpace(tail))
+        {
+            await bot.SendMessage(chatId,
+                $"<b>Log tail</b>\n<pre>{HtmlEscape(tail)}</pre>",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        }
+        else if (File.Exists(job.LogPath) && !job.IsFinished)
+        {
+            // Empty log on a still-running job almost always means Python (or similar)
+            // is block-buffering stdout because it's redirected to a file. Surface this
+            // explicitly — silence here is the worst UX.
+            await bot.SendMessage(chatId,
+                "Log is empty so far. If this is a Python script, stdout is likely block-buffered " +
+                "when redirected. Re-run with <code>PYTHONUNBUFFERED=1</code> in the task's env, " +
+                "or invoke <code>python -u</code> / <code>stdbuf -oL python …</code>.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        }
+
+        // Re-evaluate the task's original output spec so an Images-output task surfaces
+        // its latest renders, a File-output task sends the latest file, etc. Uses the
+        // shared EvaluateOutputAsync helper that /results also calls — same path,
+        // same caption / glob / sidecar handling.
+        if (job.Task is not null && job.Task.Output is { } outputSpec &&
+            outputSpec.Type is not TaskOutputType.Text)
+        {
+            try
+            {
+                var result = await _executor.EvaluateOutputAsync(job.Task, job.Parameters, cancellationToken);
+                // Drop artifacts older than the job's start — those belong to a previous
+                // run and showing them under "Job N" would mislead the user into
+                // thinking this job has already produced output.
+                var fresh = FilterArtifactsSince(result.Artifacts, job.StartedAtUtc);
+                if (fresh.Count > 0)
+                {
+                    var freshResult = new TaskExecutionResult { Success = result.Success, ExitCode = result.ExitCode };
+                    foreach (var a in fresh) freshResult.Artifacts.Add(a);
+                    await SendResultAsync(chatId, freshResult, cancellationToken);
+                }
+                else if (job.IsFinished)
+                {
+                    await bot.SendMessage(chatId,
+                        "No new outputs were produced by this job.",
+                        cancellationToken: cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not collect current output for job {Id}", id);
+            }
+        }
+    }
+
+    private static List<OutputArtifact> FilterArtifactsSince(IEnumerable<OutputArtifact> artifacts, DateTime sinceUtc)
+    {
+        var fresh = new List<OutputArtifact>();
+        foreach (var a in artifacts)
+        {
+            // Text-only artifacts (LogTail bodies, etc.) have no path — always keep them,
+            // they're synthesized fresh on every evaluate.
+            if (string.IsNullOrEmpty(a.Path))
+            {
+                fresh.Add(a);
+                continue;
+            }
+            try
+            {
+                var mtime = File.GetLastWriteTimeUtc(a.Path);
+                if (mtime >= sinceUtc) fresh.Add(a);
+            }
+            catch
+            {
+                // Path no longer accessible — drop it; nothing useful to show.
+            }
+        }
+        return fresh;
+    }
+
+    private static string FormatJobExit(JobRecord j)
+    {
+        if (j.Killed) return "killed";
+        if (j.ExitCode is int code) return code == 0 ? "ok" : $"exit {code}";
+        return "exit unknown";
+    }
+
+    private static string FormatElapsed(TimeSpan span)
+    {
+        if (span.TotalSeconds < 60) return $"{(int)span.TotalSeconds}s";
+        if (span.TotalMinutes < 60) return $"{(int)span.TotalMinutes}m {(int)(span.TotalSeconds % 60)}s";
+        if (span.TotalHours < 48) return $"{(int)span.TotalHours}h {(int)(span.TotalMinutes % 60)}m";
+        return $"{(int)span.TotalDays}d {(int)(span.TotalHours % 24)}h";
+    }
+
     private string BuildHelp() =>
         "TeleTasks - chat in natural language to run pre-defined tasks.\n\n" +
         "Commands:\n" +
-        "  /tasks         - list configured (and disabled) tasks\n" +
-        "  /reload        - reload tasks.json\n" +
-        "  /dry <text>    - resolve a task and show what would run, without running it\n" +
+        "  /tasks          - list configured (and disabled) tasks\n" +
+        "  /reload         - reload tasks.json\n" +
+        "  /dry <text>     - resolve a task and show what would run, without running it\n" +
         "  /results <task> - show the latest output of <task> without running it\n" +
-        "  /whoami        - show your user/chat IDs\n" +
-        "  /help          - this message\n\n" +
+        "  /jobs           - list active and recent long-running jobs\n" +
+        "  /job N          - status, log tail, and current output for job N\n" +
+        "  /stop N         - kill a running job\n" +
+        "  /whoami         - show your user/chat IDs\n" +
+        "  /help           - this message\n\n" +
         "Anything else is sent to the local LLM for matching.";
 
     private string BuildTaskList()

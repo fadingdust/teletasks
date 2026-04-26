@@ -389,6 +389,58 @@ The matcher's response schema includes two reserved values, `_show_tasks` and
 `_show_help`, which the bot intercepts. Real tasks are not allowed to start
 with `_` (the registry rejects them at load).
 
+## Long-running tasks
+
+Set `"longRunning": true` on a task to fire-and-forget: the executor spawns the
+process detached (via `setsid` so it survives bot restarts), redirects
+stdout+stderr to a log file in `~/.config/teletasks/run-logs/`, and immediately
+returns with a job ID. The configured `commandTimeoutSeconds` is ignored — you
+own the lifecycle.
+
+```jsonc
+{
+  "name": "render_loop",
+  "description": "Run the SDXL render loop until I /stop it.",
+  "longRunning": true,
+  "command": "/usr/bin/env",
+  "args": ["python3", "render.py", "--prompt", "{prompt}"],
+  "parameters": [{ "name": "prompt", "type": "string", "required": true }],
+  "output": {
+    "type": "Images",
+    "directory": "/home/me/Pictures/renders",
+    "sortBy": "newest",
+    "count": 4
+  }
+}
+```
+
+When you message the bot to run this, the reply is immediate:
+
+```
+Started job 7 (render_loop, pid 12345).
+Log: /home/me/.config/teletasks/run-logs/render_loop-7-...log
+Use /job 7 to check progress, /stop 7 to kill.
+```
+
+Three commands manage running and recently-finished jobs:
+
+- **`/jobs`** — active jobs first, then the last 10 finished
+- **`/job <N>`** — for job N: status, the last 30 lines of its log, AND the
+  task's *original* output spec re-evaluated (so an `Images`-output task pulls
+  the latest renders right into the chat, a `LogTail` task tails the live log,
+  etc.)
+- **`/stop <N>`** — SIGKILL the job's process tree
+
+Three matcher virtual routes also pick this up from natural language:
+
+- "what's running?" / "any jobs?" → `/jobs`
+- "how's the render going?" / "is it done yet?" → `/job <latest>`
+
+State persists to `~/.config/teletasks/jobs.json`. If the bot restarts mid-job,
+running PIDs are reconciled at startup so jobs are still visible. Real exit
+codes are recovered when a job finishes naturally; killed jobs have `null`
+exit (we killed the wrapper before the exit code could be recorded).
+
 ## Built-in commands
 
 - `/help`, `/start` – usage
@@ -396,6 +448,9 @@ with `_` (the registry rejects them at load).
 - `/reload` – reload `tasks.json` without restarting
 - `/dry <text>` – resolve a task and show what *would* run, without running it.
   Useful to verify the LLM picked the right one and parameters look right.
+- `/jobs` – list active and recent long-running jobs
+- `/job <N>` – status, log tail, and current output for job N
+- `/stop <N>` – kill a running job
 - `/whoami` – show your user / chat IDs (handy for the allow-list)
 
 ## Disabling tasks

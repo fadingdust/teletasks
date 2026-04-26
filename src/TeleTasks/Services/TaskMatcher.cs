@@ -11,6 +11,8 @@ public sealed class TaskMatcher
     public const string ShowTasksRoute = "_show_tasks";
     public const string ShowHelpRoute = "_show_help";
     public const string ShowResultsRoute = "_show_results";
+    public const string ShowJobsRoute = "_show_jobs";
+    public const string CheckLatestJobRoute = "_check_latest_job";
 
     private const string SystemPrompt = """
 You are a strict request router for a personal Linux assistant bot.
@@ -28,6 +30,13 @@ Decide where to route the user's message:
   • "_show_tasks" — when the user is asking what the bot can do, what
     tasks exist, what's available.
   • "_show_help" — when the user is asking for help or instructions.
+  • "_show_jobs" — when the user is asking about running tasks / jobs /
+    what's in progress (e.g. "what's running?", "list jobs", "anything
+    still going?"). Only relevant for tasks marked longRunning.
+  • "_check_latest_job" — when the user is asking how the most recent job
+    is going (e.g. "how's the render?", "is it done yet?", "any progress?")
+    without naming a task. Different from "_show_results" which targets
+    a specific task by name.
   • null — for greetings, chit-chat, or anything the bot can't handle.
 
 Rules:
@@ -37,8 +46,9 @@ Rules:
 - Use the parameter's declared type (string, integer, number, boolean).
 - If a required parameter is missing from the message, set "task" to null
   and ask for it in "reasoning".
-- "Latest", "most recent", "show me the output of …", "results from X",
-  "what did X produce" all map to "_show_results", NOT to running a task.
+- "results from X", "what did X produce" with a SPECIFIC named task →
+  "_show_results". "How's the latest run going" with no task named →
+  "_check_latest_job".
 - When in doubt between running a real task and one of the virtual routes,
   prefer the virtual route. It is much worse to run the wrong task than
   to ask the user to clarify.
@@ -93,7 +103,8 @@ Rules:
             return new TaskMatch(string.Empty, new Dictionary<string, object?>(), payload?.Reasoning);
         }
 
-        if (payload.Task == ShowTasksRoute || payload.Task == ShowHelpRoute)
+        if (payload.Task == ShowTasksRoute || payload.Task == ShowHelpRoute ||
+            payload.Task == ShowJobsRoute || payload.Task == CheckLatestJobRoute)
         {
             return new TaskMatch(payload.Task, new Dictionary<string, object?>(), payload.Reasoning);
         }
@@ -132,6 +143,8 @@ Rules:
         sb.AppendLine($"- {ShowTasksRoute}: route here when the user asks what tasks/commands exist");
         sb.AppendLine($"- {ShowHelpRoute}: route here when the user asks for help or instructions");
         sb.AppendLine($"- {ShowResultsRoute}: route here when the user wants to see the latest output of a specific task without running it. Set parameters.task_name to the task's name.");
+        sb.AppendLine($"- {ShowJobsRoute}: route here when the user asks what jobs / long-running tasks are running");
+        sb.AppendLine($"- {CheckLatestJobRoute}: route here when the user asks how a recent or current job is going");
         sb.AppendLine();
         sb.AppendLine("Task catalog:");
         foreach (var task in _registry.Tasks)
@@ -173,6 +186,8 @@ Rules:
         taskNames.Add(ShowTasksRoute);
         taskNames.Add(ShowHelpRoute);
         taskNames.Add(ShowResultsRoute);
+        taskNames.Add(ShowJobsRoute);
+        taskNames.Add(CheckLatestJobRoute);
 
         return new JsonObject
         {

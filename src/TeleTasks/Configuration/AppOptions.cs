@@ -15,6 +15,13 @@ public sealed class TelegramOptions
     /// Ollama health check fails (unreachable, or configured model not pulled).
     /// </summary>
     public bool StartupNotificationsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How often the bot polls active long-running jobs to push new artifacts
+    /// and final completion messages to the originating chat. Set to 0 to
+    /// disable progressive notifications entirely.
+    /// </summary>
+    public int JobPollSeconds { get; set; } = 30;
 }
 
 public sealed class OllamaOptions

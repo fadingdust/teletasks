@@ -45,6 +45,18 @@ public sealed class TaskDefinition
     [JsonPropertyName("timeoutSeconds")]
     public int? TimeoutSeconds { get; set; }
 
+    /// <summary>
+    /// When true the task is spawned detached: stdout+stderr go to a log file
+    /// in the run-logs dir, the executor returns a job id immediately, and
+    /// <see cref="TimeoutSeconds"/> is ignored (the job owns its own lifecycle).
+    /// Use /jobs, /job N, /stop N to manage running tasks.
+    /// </summary>
+    [JsonPropertyName("longRunning")]
+    public bool? LongRunning { get; set; }
+
+    [JsonIgnore]
+    public bool IsLongRunning => LongRunning ?? false;
+
     [JsonPropertyName("parameters")]
     public List<TaskParameter> Parameters { get; set; } = new();
 

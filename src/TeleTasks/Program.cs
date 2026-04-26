@@ -88,6 +88,7 @@ builder.Services.Configure<TaskCatalogOptions>(builder.Configuration.GetSection(
 
 builder.Services.AddSingleton<TaskRegistry>();
 builder.Services.AddSingleton<OutputCollector>();
+builder.Services.AddSingleton<JobTracker>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<TaskMatcher>();
 builder.Services.AddSingleton<OllamaClient>();
