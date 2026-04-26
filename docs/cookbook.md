@@ -65,7 +65,8 @@ output renders in a Telegram `<pre>` block so column-aligned tools like
 
 No `command` because `LogTail` reads the file directly. "tail my syslog 100
 lines" extracts `path=/var/log/syslog`, `lines=100`. If the message doesn't
-include the path, the bot prompts for it [in-flight: `claude/conversational-params`].
+include the path, the bot prompts for it (one parameter at a time —
+type `/cancel` to abort).
 
 ---
 
@@ -93,7 +94,7 @@ include the path, the bot prompts for it [in-flight: `claude/conversational-para
 
 ---
 
-## 4. Render task with image+sidecar metadata [in-flight: `claude/output-spec-promotion`]
+## 4. Render task with image+sidecar metadata
 
 The pattern: each render writes `0007.png` plus `0007.json` carrying the
 prompt / seed / model / cfg. Discover detects this automatically; the
@@ -148,7 +149,7 @@ Three `captionFrom.mode` values:
 
 ---
 
-## 5. Render task with templated path [in-flight: `claude/output-spec-promotion`]
+## 5. Render task with templated path
 
 If your script writes to `./results/<lora_name>/output/`, parameterise the
 path through another parameter. Multi-pass substitution resolves both
@@ -176,7 +177,7 @@ to `lora-foo`. End result: `./results/lora-foo/output`.
 
 ---
 
-## 6. Latest from a globbed path [in-flight: `claude/output-spec-promotion`]
+## 6. Latest from a globbed path
 
 When you don't have a single canonical lora value — "send me the latest
 from whichever run finished most recently" — use a wildcard:
@@ -196,7 +197,7 @@ directories match, the freshest by mtime wins. Works in `Image.path`,
 
 ---
 
-## 7. Long-running render with check-ins [in-flight: `claude/long-running-jobs`]
+## 7. Long-running render with check-ins
 
 ```jsonc
 {
@@ -292,7 +293,7 @@ once you've confirmed the camera works.
 
 ---
 
-## 10. Shell wrapping a Python script [in-flight: `claude/output-spec-promotion`]
+## 10. Shell wrapping a Python script
 
 When `run.sh` invokes `python3 app.py …`, discover detects the wrap and
 copies `app.py`'s output spec to the shell candidate, plus copies any
@@ -342,7 +343,7 @@ in place via the `source` field rather than appending duplicates.
 
 ---
 
-## 12. Show latest output without re-running [in-flight: `claude/output-spec-promotion`]
+## 12. Show latest output without re-running
 
 Two ways to evaluate a task's output spec without triggering its command:
 

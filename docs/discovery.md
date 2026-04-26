@@ -4,8 +4,7 @@
 entries. This page describes the pipeline, what each pass logs, and which
 flags flip which behaviours.
 
-> Some passes below are on feature branches pending merge. Each section
-> notes which branch it lives on. See [SPECS.md](../SPECS.md) for status.
+> See [SPECS.md](../SPECS.md) for the running feature ledger.
 
 ## Modes
 
@@ -69,7 +68,7 @@ something on disk, it `stat`s that path and appends a one-line
 Cheap (one stat per parameter, capped at 500 enumerated files per
 directory). URL-shaped defaults are skipped.
 
-### 3. Output-spec promoter [in-flight: `claude/output-spec-promotion`]
+### 3. Output-spec promoter
 
 `OutputSpecPromoter` looks at each candidate's parameters. When exactly
 ONE parameter has a strongly-named output token AND the task currently
@@ -118,7 +117,7 @@ notes the conflict.
 
 Opt out with `--no-promote-output`.
 
-### 4. Shell wrapper resolver [in-flight: `claude/output-spec-promotion`]
+### 4. Shell wrapper resolver
 
 Common pattern: a Python script does the actual work; a shell script
 wraps it with environment setup. `ShellWrapperResolver` detects the wrap
