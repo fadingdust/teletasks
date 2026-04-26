@@ -161,6 +161,42 @@ show me the last 100 lines of /var/log/syslog
 send me my 5 latest screenshots
 ```
 
+### As a systemd service (Ubuntu / any systemd-based Linux)
+
+After running `setup` once interactively to capture your token, install
+the bot as a user service that starts on boot and auto-restarts on
+failure:
+
+```bash
+scripts/install-systemd.sh
+```
+
+What it does:
+
+1. `dotnet publish -c Release` → `~/.local/share/teletasks/`.
+2. Writes `~/.config/systemd/user/teletasks.service` pointing at the
+   resolved `dotnet` binary and the published DLL.
+3. `sudo loginctl enable-linger $USER` so the unit keeps running when
+   you log out (skip with `--no-linger` if you only want the service
+   while logged in).
+4. `systemctl --user enable --now teletasks.service`.
+
+Re-running the script is safe — it republishes, rewrites the unit, and
+restarts. Pass `--no-publish` to skip the publish step when you only
+want to refresh the unit file.
+
+Daily ops:
+
+```bash
+systemctl --user status teletasks
+journalctl --user -u teletasks -f       # follow logs
+systemctl --user restart teletasks
+```
+
+To remove: `scripts/uninstall-systemd.sh` (add `--purge` to also wipe
+the published binary, `--purge-config` to also wipe `~/.config/teletasks`
+including your `tasks.json` — irreversible).
+
 ## Defining a task
 
 ```jsonc

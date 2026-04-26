@@ -243,6 +243,99 @@ the chat hot path.
 
 ---
 
+## Multi-provider chat support
+
+Today the bot is hard-bound to Telegram via `TelegramBotService`.
+A four-phase plan makes adding Discord / Matrix / Slack later a
+self-contained job per provider:
+
+### Phase 1: Provider abstraction (no functional change)
+
+New types in `Services/Chat/`:
+- `ChatId` — provider-qualified `(Provider, Id)` struct, canonical
+  string form `"telegram:42"` / `"discord:1234567890"`. JSON converter
+  reads legacy bare-`long` form for backward compat with existing
+  `jobs.json`.
+- `IncomingMessage` — `(ChatId, UserId, Username, Text)` record.
+- `IChatProvider` — `OnMessage` event, `StartAsync` / `StopAsync`,
+  `SendTextAsync` (plain), `SendHtmlAsync` (canonical
+  Telegram-style HTML — providers translate to native flavour),
+  `SendImageAsync`, `SendDocumentAsync`, `SendTypingAsync`,
+  `IsAuthorized`.
+- `ChatHtml.Escape` — provider-agnostic escape for the canonical
+  HTML markup, used by the routing pipeline before
+  `SendHtmlAsync`.
+
+Refactor surface inside this phase:
+- `JobRecord.ChatId`: `long?` → `ChatId?`. Custom `JsonConverter`
+  handles legacy `long` deserialisation.
+- `ConversationStateTracker` keyed by `ChatId` instead of `long`.
+- Allow-list moves from `TelegramOptions` into per-provider config
+  (`Chat:Providers:Telegram:AllowedUserIds` etc.).
+- `JobTracker.AssignChat(int id, ChatId chat)`.
+
+### Phase 2: Telegram becomes a provider
+
+- `TelegramChatProvider : IChatProvider` wraps the existing
+  `TelegramBotClient`, owns `_botUsername`, strips
+  `/cmd@MyBot` mentions before raising `OnMessage`.
+- `TelegramBotService` shrinks to a thin host that registers
+  the provider and runs the message router + notifier loop.
+- The dispatch logic in `OnMessageAsync` calls `provider.SendXAsync`
+  instead of `bot.SendX(...)`.
+- Eventually rename `TelegramBotService` → `ChatHost` (post-phase-2
+  cleanup).
+
+### Phase 3: Discord (~1-2 days)
+
+- `DiscordChatProvider : IChatProvider` using `Discord.Net`.
+- `DiscordOptions` with bot token + allow-list (UserIds, GuildIds,
+  ChannelIds; defaults to DM-only).
+- HTML → Discord-Markdown translator (triple-backtick code blocks,
+  `**bold**`, `_italic_`). Escape literal triple-backticks in
+  user content via zero-width space insertion.
+- Setup wizard branch: `dotnet TeleTasks.dll setup --provider discord`
+  prompts for token, validates via `GET /users/@me`, prints the
+  invite URL with the right intent flags
+  (`MessageContent` is required).
+
+### Phase 4: OAuth-ready (designed in, not built)
+
+- `IOAuthChatProvider : IChatProvider` extends with
+  `BeginAuthorizationAsync` / `CompleteAuthorizationAsync` /
+  `RefreshTokenAsync` / `TokenIsValid`.
+- Tokens persisted in user config dir, encrypted at rest via
+  `ProtectedData` or Linux keyring lookup.
+- Setup wizard's main loop branches on `IOAuthChatProvider`:
+  prints redirect URL, listens on `localhost:port` for the
+  code, exchanges, persists.
+- A token-refresh task on `ChatHost` polls each
+  `IOAuthChatProvider.TokenIsValid` and refreshes proactively.
+- This way Slack / Microsoft Teams / Microsoft Graph adoption
+  later is a fresh `IOAuthChatProvider` implementation —
+  no churn through the rest of the codebase.
+
+### Open questions
+
+- Single-process multi-provider needs a `ChatHost` background
+  service that owns all providers and their notifier loop.
+  Current design has notification logic inside
+  `TelegramBotService`; phase 2 cleanup should extract it
+  into a `JobNotifierService` that walks all jobs (each
+  `JobRecord.ChatId.Provider` tells it which provider to send
+  through).
+- HTML → mrkdwn (Slack) / matrix.html / Discord-Markdown
+  translators each need test coverage. Round-trip a
+  representative set of bot output snippets through each
+  to validate.
+- Setup wizard's interactive flow is currently
+  Telegram-shaped (token + user-id capture via `getUpdates`).
+  Each new provider needs its own analogue — Discord has
+  no `getUpdates` equivalent, so the "send a message after
+  invite" trick uses gateway events instead.
+
+---
+
 ## Wild ideas
 
 ### Voice notes
