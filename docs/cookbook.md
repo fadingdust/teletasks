@@ -330,7 +330,7 @@ prefer to author it directly:
   "name": "sh_run",
   "description": "Render via the run.sh wrapper.",
   "command": "/bin/bash",
-  "args": ["/home/me/sdxl-docker/run.sh", "{lora}", "{prompt}"],
+  "args": ["/home/me/image-renderer/run.sh", "{lora}", "{prompt}"],
   "parameters": [
     { "name": "lora",       "type": "string", "required": true },
     { "name": "prompt",     "type": "string", "required": true },

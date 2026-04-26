@@ -322,8 +322,8 @@ notifier pushes.
 
 ## "Bot ran my task with a value I never typed"
 
-Symptom: you sent "sh_run_local" with no arguments and the bot ran it
-with `arg1=run.sh` (or some similar plausible-looking value) instead
+Symptom: you sent "sh_render_loop" with no arguments and the bot ran it
+with `arg1=render.sh` (or some similar plausible-looking value) instead
 of asking. The matcher hallucinated.
 
 The hallucination guard in `HasUsableValue` should catch this for

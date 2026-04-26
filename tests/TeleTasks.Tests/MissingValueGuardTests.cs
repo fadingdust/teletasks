@@ -73,26 +73,27 @@ public class MissingValueGuardTests
     [Fact]
     public void HasUsableValue_strips_task_name_before_checking_tokens()
     {
-        // Reproducer from real usage: user typed "sh_run_local" (the task
-        // name itself), LLM hallucinated arg1="run.sh". The guard would have
-        // wrongly trusted it because tokens "run" and "sh" both appear in
-        // "sh_run_local". Stripping the task name first leaves an empty
-        // residual, so the value is correctly classified as missing.
-        var values = Values(("arg1", "run.sh"));
+        // Reproducer for the false-positive case: user typed only the task
+        // name "sh_render_loop", LLM hallucinated arg1="render.sh". Without
+        // stripping, the guard would trust "render.sh" because the token
+        // "render" appears in the user's message — but only because the
+        // user's message IS the task name. Stripping the task name leaves
+        // an empty residual, so the value is correctly classified missing.
+        var values = Values(("arg1", "render.sh"));
         var p = Param(name: "arg1");
         Assert.False(MissingValueGuard.HasUsableValue(p, values,
-            userMessage: "sh_run_local",
-            taskName: "sh_run_local"));
+            userMessage: "sh_render_loop",
+            taskName: "sh_render_loop"));
     }
 
     [Fact]
     public void HasUsableValue_accepts_string_when_user_message_includes_value_with_separators()
     {
-        var values = Values(("arg1", "run.sh"));
+        var values = Values(("arg1", "render.sh"));
         var p = Param(name: "arg1");
         Assert.True(MissingValueGuard.HasUsableValue(p, values,
-            userMessage: "run sh_run_local with run.sh and 0",
-            taskName: "sh_run_local"));
+            userMessage: "run sh_render_loop with render.sh and 0",
+            taskName: "sh_render_loop"));
     }
 
     [Fact]

@@ -72,7 +72,7 @@ public static class SidecarMetadata
         // Tries the direct change-extension form first, then progressively
         // strips trailing index suffixes from the image stem so a render
         // batch like:
-        //   t2i-20260424_1905_00.png  →  t2i-20260424_1905.json
+        //   render-20250101_1200_00.png  →  render-20250101_1200.json
         // pairs correctly. If nothing matches, returns the direct form
         // (callers like ReadFlatScalars will see it as missing → empty).
         var ext = NormalizeExtension(extension);

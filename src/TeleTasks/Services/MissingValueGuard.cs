@@ -41,7 +41,7 @@ public static class MissingValueGuard
         if (string.IsNullOrEmpty(userMessage)) return true;
 
         // Strip the task name from the search space. If the user typed only
-        // the task name ("sh_run_local"), tokens of a hallucinated value
+        // the task name ("sh_render_loop"), tokens of a hallucinated value
         // ("run.sh" → "run", "sh") that overlap with the task name itself
         // shouldn't be accepted as "the user said it". An empty residual
         // means every required string param is missing.

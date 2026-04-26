@@ -38,11 +38,11 @@ public sealed class SidecarMetadataTests : IDisposable
     [Fact]
     public void SiblingPath_strips_trailing_underscore_index_when_direct_misses()
     {
-        // Render batch pattern: image is t2i-..._00.png but sidecar is t2i-....json
+        // Render batch pattern: image is render-..._00.png but sidecar is render-....json
         // because the sidecar names the run, not the per-image index.
-        var image = Path.Combine(_root, "t2i-20260424_1905_00.png");
+        var image = Path.Combine(_root, "render-20250101_1200_00.png");
         File.WriteAllBytes(image, new byte[] { 0x89, 0x50, 0x4E, 0x47 });
-        var sidecar = Path.Combine(_root, "t2i-20260424_1905.json");
+        var sidecar = Path.Combine(_root, "render-20250101_1200.json");
         File.WriteAllText(sidecar, "{\"prompt\":\"a forest\"}");
 
         var sib = SidecarMetadata.SiblingPath(image, ".json");

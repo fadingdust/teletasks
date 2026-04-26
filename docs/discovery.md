@@ -229,7 +229,7 @@ scripting.
 # py_render (py:argparse:render.py)
 #   description: Render images from prompts via SDXL
 #   command:     python3 render.py --prompt {prompt} --output_dir {output_dir} ...
-#   workingDir:  /home/me/Projects/sdxl-docker
+#   workingDir:  /home/me/Projects/image-renderer
 #   output:      Images (sidecars detected)
 #   parameters (4):
 #     - prompt (string) (required)

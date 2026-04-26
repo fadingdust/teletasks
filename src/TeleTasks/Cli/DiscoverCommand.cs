@@ -594,7 +594,7 @@ Common options:
 
 Examples:
   teletasks discover project --path ~/projects/scripts
-  teletasks discover project --path ~/projects/sdxl-docker --llm -i -w
+  teletasks discover project --path ~/projects/image-renderer --llm -i -w
   teletasks discover systemd --user --running
   teletasks discover git --path ~/code/myrepo -w
   teletasks discover logs --path /var/log --since 2d

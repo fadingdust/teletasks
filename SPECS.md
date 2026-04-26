@@ -31,7 +31,7 @@ JSON-Schema-constrained output.
   `_show_results`, `_show_jobs`, `_check_latest_job` so meta questions
   don't get mis-routed to a real task.
 - **Exact-task-name fast path** — typing the literal task name
-  (`sh_run_local`) skips the LLM round-trip and goes straight to
+  (`sh_render_loop`) skips the LLM round-trip and goes straight to
   conversational parameter collection. Saves 20-30s on tiny models.
 - **Hallucination guards** — for required string parameters, reject
   values that don't appear in the user's message after stripping the

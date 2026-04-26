@@ -290,7 +290,7 @@ Add `-i` (or `--interactive`) to step through each discovered task and decide:
 Pairs with `-w` to write only what you confirmed:
 
 ```bash
-dotnet run --project src/TeleTasks -- discover project --path ~/Projects/sdxl-docker --llm -i -w
+dotnet run --project src/TeleTasks -- discover project --path ~/Projects/image-renderer --llm -i -w
 ```
 
 Closed stdin (piped null, here-doc) → every prompt takes the default, useful for
@@ -509,7 +509,7 @@ sidecar file when a job finishes naturally; the `Killed` flag tracks
 - `/cancel` – abort a pending parameter-collection prompt
 - `/whoami` – show your user / chat IDs (handy for the allow-list)
 
-Typing the literal task name (`tail_log`, `sh_run_local`) is a fast path —
+Typing the literal task name (`tail_log`, `sh_render_loop`) is a fast path —
 the bot skips the LLM call and walks you through every required parameter
 via the conversational prompt loop.
 
