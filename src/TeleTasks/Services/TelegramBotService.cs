@@ -125,7 +125,14 @@ public sealed class TelegramBotService : BackgroundService
             if (job.Task is null) continue;
 
             var output = job.Task.Output;
-            if (output is not null && output.Type is not TaskOutputType.Text)
+            // Progressive push runs while the job is alive, plus one final
+            // flush after it finishes (so we catch the last artifacts before
+            // the completion summary). After CompletionNotified flips true
+            // we stop polling this job — otherwise a finished job whose
+            // output dir is shared with a later run would keep "discovering"
+            // and re-pushing the new run's artifacts as if they were its own.
+            var allowProgressive = !job.IsFinished || !job.CompletionNotified;
+            if (allowProgressive && output is not null && output.Type is not TaskOutputType.Text)
             {
                 await PushNewArtifactsAsync(chatId, job, ct);
             }
@@ -151,6 +158,10 @@ public sealed class TelegramBotService : BackgroundService
         }
 
         var seen = new HashSet<string>(job.SeenArtifactPaths, StringComparer.Ordinal);
+        // For a finished job, cap the mtime window so we don't claim a later
+        // job's artifacts during the final flush. The grace lets late writes
+        // (subprocesses still flushing after the wrapper exited) through.
+        var endCutoff = job.FinishedAtUtc?.AddSeconds(10);
         var fresh = new List<OutputArtifact>();
         foreach (var artifact in result.Artifacts)
         {
@@ -159,9 +170,11 @@ public sealed class TelegramBotService : BackgroundService
             try
             {
                 // mtime stable for at least one tick → file is settled. Anything
-                // older than the job's start belongs to a previous run.
+                // older than the job's start belongs to a previous run; anything
+                // newer than its finish (plus grace) belongs to a later run.
                 var mtime = File.GetLastWriteTimeUtc(artifact.Path);
                 if (mtime < job.StartedAtUtc) continue;
+                if (endCutoff is DateTime cut && mtime > cut) continue;
             }
             catch { continue; }
             fresh.Add(artifact);
