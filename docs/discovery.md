@@ -12,7 +12,7 @@ flags flip which behaviours.
 |---|---|
 | `discover project [--path DIR]`    | Makefile / justfile / package.json / pyproject.toml / `*.py` (argparse) / `*.sh` / `.vscode/tasks.json` in DIR (default: cwd) |
 | `discover systemd [--user]`        | systemctl-listed services → journalctl tail tasks |
-| `discover git [--path DIR]`        | per-repo status / log / diff / branches (+ gh runs/PRs if `gh` is on PATH) |
+| `discover git [--path DIR]`        | per-repo status / log / diff / branches / fetch / pull (+ gh runs/PRs if `gh` is on PATH) |
 | `discover logs [--path DIR]`       | `*.log` files in DIR, filtered by mtime / size |
 
 All modes share the same `--write` / `--output` / `--llm` / `--inspect`

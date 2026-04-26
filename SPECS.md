@@ -116,8 +116,8 @@ JSON-Schema-constrained output.
   `.vscode/tasks.json`, `*.sh` (positional + `getopts`),
   `*.py` (argparse via Python AST helper).
 - `discover systemd` — per-unit journalctl tail tasks.
-- `discover git` — per-repo status / log / diff / branches; gh runs/PRs
-  if `gh` is installed.
+- `discover git` — per-repo status / log / diff / branches / fetch /
+  pull; gh runs/PRs if `gh` is installed.
 - `discover logs` — `*.log` files filtered by mtime, size, glob.
 - `--inspect` (default ON) — appends current-state notes to task
   descriptions (file / dir size, latest mtime, file counts by extension).

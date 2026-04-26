@@ -298,7 +298,7 @@ dotnet run --project src/TeleTasks -- discover project --path ~/code/my-script
 dotnet run --project src/TeleTasks -- discover systemd --running       # only running
 dotnet run --project src/TeleTasks -- discover systemd --user --all    # user scope, all units
 
-# per-repo git tasks (status, log, diff, branches; +gh runs/PRs if `gh` is installed)
+# per-repo git tasks (status, log, diff, branches, fetch, pull; +gh runs/PRs if `gh` is installed)
 dotnet run --project src/TeleTasks -- discover git --path ~/code/myrepo
 
 # tail-tasks for *.log files in a directory

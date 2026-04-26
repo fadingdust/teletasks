@@ -76,6 +76,34 @@ public static class GitDiscoverer
                 Args = new List<string> { "-C", absolute, "branch", "-vv", "--sort=-committerdate" },
                 WorkingDirectory = absolute,
                 Output = new TaskOutputSpec { Type = TaskOutputType.Text }
+            },
+            new()
+            {
+                // Read-only "what's new on origin?" — fetches all remotes and
+                // prunes deleted refs, but doesn't touch the working tree. Safe
+                // to alias to NL phrasings like "check for updates" without
+                // worrying about merge conflicts.
+                Source = $"git:{name}:fetch",
+                SuggestedName = $"git_{name}_fetch",
+                Description = $"Fetch all remotes for {name} (no merge, no working-tree changes).",
+                Command = "/usr/bin/git",
+                Args = new List<string> { "-C", absolute, "fetch", "--all", "--prune" },
+                WorkingDirectory = absolute,
+                Output = new TaskOutputSpec { Type = TaskOutputType.Text }
+            },
+            new()
+            {
+                // Fast-forward / merge the current branch's upstream into the
+                // working tree. Output captures the merge summary line
+                // ("Updating abc..def", "Already up to date.", or merge
+                // conflict messages so you know to resolve them locally).
+                Source = $"git:{name}:pull",
+                SuggestedName = $"git_{name}_pull",
+                Description = $"Pull the current branch's upstream into {name} (fetch + merge).",
+                Command = "/usr/bin/git",
+                Args = new List<string> { "-C", absolute, "pull" },
+                WorkingDirectory = absolute,
+                Output = new TaskOutputSpec { Type = TaskOutputType.Text }
             }
         };
 
