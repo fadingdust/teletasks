@@ -454,6 +454,70 @@ without being flaky.
   defaults to `Run` so we can roll the schema out without
   breaking the bot mid-deploy.
 
+### Surfacing intents in /tasks and /jobs listings
+
+Intents aren't just an LLM-routing concept — they're metadata
+that should appear in the lists so the user sees what's possible
+per row without having to remember.
+
+**`/tasks` rendering**:
+
+```
+Available tasks:
+• render          [Run · Show · Restart · History]
+• system_status   [Run · History]
+• tail_log        [Run · Show]
+• send_journal    [Run · Show · Restart · History]
+```
+
+Disabled tasks render the same way but greyed conceptually
+(e.g. with a `(disabled)` suffix as today).
+
+**`/jobs` rendering** — intents are filtered by job state, so the
+list only shows verbs that *currently* apply:
+
+```
+Active:
+• /job 5 — render running 4m 12s   [Status · Stop · Show]
+• /job 7 — train running 28m       [Status · Stop]
+
+Recent:
+• /job 4 — render ok after 6m 3s   [Show · Restart · History]
+• /job 3 — render killed after 2m  [Restart · History]
+```
+
+Pairs naturally with the **inline keyboard buttons** idea earlier
+in this file: each intent label becomes a tappable button that
+fires the matching handler. So `/jobs` shows running jobs with
+`[Status]`/`[Stop]` buttons, finished jobs with
+`[Show]`/`[Restart]` buttons. The label text and the callback
+data both come from the intent system — single source of truth.
+
+**Where intent lists come from**:
+
+- Default (per task) inferred from task definition shape:
+  - `Run` always.
+  - `Show` when `output.Type` is anything other than `Text`.
+  - `Status` / `Stop` when `longRunning: true`.
+  - `Restart` and `History` always (assuming the persistent
+    job log lands).
+  - `Schedule` only when scheduling is configured.
+- Override per task via an optional `intents:` array in
+  `tasks.json`, which adds to or replaces the inferred defaults.
+- Discover suggests `intents:` based on the same heuristics
+  it uses to suggest `longRunning:` (heavy ML imports,
+  inference_steps params, venv activation in shell wrappers).
+
+**Where intent lists come from for jobs**: derived from the job
+state at display time. A job that's running shows `Status` and
+`Stop`. A finished job shows `Show` (to re-render the artifacts)
+and `Restart`. `History` only shows up when there are >=2 runs
+of the same task — first job has no history to compare against.
+
+This is the actual user-visible payoff of intents — discoverability
+in the lists is the killer feature; the routing-pipeline
+abstraction is mostly machinery to support it.
+
 ### Why now (after multi-provider lands)
 
 Intents are mostly orthogonal to which chat backend you're on,
