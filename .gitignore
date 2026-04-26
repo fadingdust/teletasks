@@ -60,3 +60,7 @@ nunit-*.xml
 appsettings.Development.json
 appsettings.Local.json
 tasks.local.json
+
+# Claude Code per-user settings (gitignored so personal allow-lists don't
+# leak; commit .claude/settings.json for team-wide rules instead)
+.claude/settings.local.json
