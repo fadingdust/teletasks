@@ -336,6 +336,135 @@ Refactor surface inside this phase:
 
 ---
 
+## Intents — verbs that apply to any task
+
+The current matcher is task-name-keyed: every variation of "do X"
+needs a task definition or a virtual route (`_show_results`,
+`_check_latest_job`, etc.). Intents would split the LLM's job into
+two: pick a verb, pick a target. The verb set is small and
+provider-agnostic; targets are the existing task catalog.
+
+### What this looks like in chat
+
+Without intents (today):
+- "render some skulls"        → `render` task, prompt=skulls
+- "results for render"        → `_show_results` virtual route
+- "is the render done?"       → `_check_latest_job` virtual route
+- "stop the render"           → `/stop <N>` slash command
+- everything else needs a hand-coded path
+
+With intents:
+- "render some skulls"        → `intent=Run`, target=`render`, params={prompt:skulls}
+- "redo my last render"       → `intent=Restart`, target=`render`
+- "what were the last 5 renders' prompts?" → `intent=History`, target=`render`, n=5
+- "schedule render every morning at 9" → `intent=Schedule`, target=`render`, cron="0 9 * * *"
+- "stop the long-running one"  → `intent=Stop`, target=latest-active
+- "show me only the renders with forest in the prompt" → `intent=Filter`, target=`render`, where={prompt~forest}
+
+### Proposed verb set
+
+| Intent     | Description                                              |
+|------------|----------------------------------------------------------|
+| `Run`      | Execute a task (the default — current matcher behavior)  |
+| `Show`     | View latest output without running (`/results` today)    |
+| `Status`   | Job status / progress (`/job <N>`, "how's it going?")    |
+| `Stop`     | Kill a running job (`/stop <N>`)                         |
+| `Restart`  | Re-run a previous job with the same parameters           |
+| `History`  | Last N runs of a task with their parameters / outcomes   |
+| `Schedule` | Cron-style recurrence (depends on the scheduled-jobs idea) |
+| `Filter`   | "Show me Xs where param Y matches Z" — sidecar query     |
+| `Cancel`   | Abort a pending parameter-collection prompt              |
+| `Help`     | Meta — what tasks exist, what params they need           |
+
+`Run` is the default, kept compatible with the current matcher so
+existing tasks.json files still work without intent annotations.
+
+### Implementation sketch
+
+The matcher's response schema gets a new top-level field:
+
+```json
+{
+  "intent": "Run" | "Show" | "Status" | "Stop" | "Restart" |
+            "History" | "Schedule" | "Filter" | "Cancel" | "Help",
+  "task": "<task-name> | _virtual | null",
+  "parameters": { ... },
+  "reasoning": "..."
+}
+```
+
+Each intent has a per-intent handler in `TelegramBotService` (or
+the future `MessageRouter`). The handler validates that `task` is
+appropriate for that intent — `Run` against `_show_results` is
+nonsense, `History` against `_check_latest_job` is nonsense — and
+either dispatches or asks the user to clarify.
+
+Most virtual routes collapse into the intent system:
+- `_show_results` → `intent=Show, task=<name>`.
+- `_check_latest_job` → `intent=Status, task=null` (target=latest).
+- `_show_jobs` → `intent=Status, task=null, filter=active`.
+- `_show_tasks` → `intent=Help, task=null`.
+- `_show_help` → `intent=Help, task=null`.
+
+So the matcher's enum shrinks (fewer virtual routes) and the
+schema gets a more structured second field that the bot can
+dispatch on.
+
+### Test infrastructure
+
+A new `IntentMatcherTests` rig with canned user phrasings:
+
+| Phrasing                                  | Expected intent + target |
+|-------------------------------------------|--------------------------|
+| "render some forest"                      | `Run` / `render`         |
+| "run render with prompt forest"           | `Run` / `render`         |
+| "redo my last render"                     | `Restart` / `render`     |
+| "stop the render"                         | `Stop` / `render`        |
+| "what's the latest render?"               | `Show` / `render`        |
+| "is render done?"                         | `Status` / `render`      |
+| "show me my last 5 render prompts"        | `History` / `render`     |
+| "show only renders where prompt has forest" | `Filter` / `render`    |
+
+Run a small model (qwen2.5:0.5b) against the table at every
+PR; expected accuracy bar is some-percentage rather than
+exact-match because the model is small. Catches regression
+without being flaky.
+
+### Open questions
+
+- **Do we need per-task intent allow-lists?** A task definition
+  could declare `supportedIntents: ["Run", "Show", "Restart"]`
+  to opt out of e.g. `Schedule`. Default is "all intents are
+  fine" — opt-out semantics keep the catalog migration easy.
+- **`Filter` is a database query in disguise.** Without the
+  SQLite sidecar index (also in IDEAS), `Filter` would have
+  to scan files at runtime — slow for big render directories.
+  Probably build `Show` / `Status` / `Restart` first; defer
+  `Filter` until the sidecar index lands.
+- **Multi-step intents** ("schedule a render of skulls every
+  morning at 9 and notify me when each one finishes") are
+  combinations. Support them later by allowing the matcher
+  to emit a sequence of intents, or punt to the explicit
+  task-chaining feature (also in IDEAS).
+- **Conversational params still apply.** If `intent=Run,
+  task=render` extracts no `prompt`, the existing
+  conversational loop kicks in and asks for it. The intent
+  handler shouldn't bypass that.
+- **Backwards compat.** A response without an `intent` field
+  defaults to `Run` so we can roll the schema out without
+  breaking the bot mid-deploy.
+
+### Why now (after multi-provider lands)
+
+Intents are mostly orthogonal to which chat backend you're on,
+but the routing pipeline that intents touch is exactly the code
+that gets refactored in phases 1+2 of the multi-provider work.
+Doing intents AFTER the `MessageRouter` extraction means the new
+intent handler chain can sit cleanly alongside the existing
+slash-command / NL dispatch — no second restructuring.
+
+---
+
 ## Wild ideas
 
 ### Voice notes
