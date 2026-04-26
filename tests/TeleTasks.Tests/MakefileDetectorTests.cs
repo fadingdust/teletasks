@@ -5,17 +5,19 @@ namespace TeleTasks.Tests;
 
 public sealed class MakefileDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public MakefileDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-make-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-make-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void WriteMakefile(string contents, string name = "Makefile")
@@ -39,7 +41,7 @@ public sealed class MakefileDetectorTests : IDisposable
 
         var candidates = MakefileDetector.Detect(_root).ToList();
         Assert.Equal(3, candidates.Count);
-        Assert.Equal(new[] { "make_build", "make_test", "make_clean" },
+        Assert.Equal(new[] { "make_proj_build", "make_proj_test", "make_proj_clean" },
                      candidates.Select(c => c.SuggestedName).ToArray());
     }
 
@@ -81,7 +83,7 @@ public sealed class MakefileDetectorTests : IDisposable
     {
         WriteMakefile("deploy:\n\techo d\n");
         var c = MakefileDetector.Detect(_root).Single();
-        Assert.Equal("Makefile:deploy", c.Source);
+        Assert.Equal("Makefile:proj:deploy", c.Source);
     }
 
     [Fact]
@@ -94,7 +96,7 @@ public sealed class MakefileDetectorTests : IDisposable
             "build:\n\techo b\n");
         var candidates = MakefileDetector.Detect(_root).ToList();
         Assert.Single(candidates);
-        Assert.Equal("make_build", candidates[0].SuggestedName);
+        Assert.Equal("make_proj_build", candidates[0].SuggestedName);
     }
 
     [Fact]
@@ -106,7 +108,7 @@ public sealed class MakefileDetectorTests : IDisposable
             "build:\n\techo b\n");
         var candidates = MakefileDetector.Detect(_root).ToList();
         Assert.Single(candidates);
-        Assert.Equal("make_build", candidates[0].SuggestedName);
+        Assert.Equal("make_proj_build", candidates[0].SuggestedName);
     }
 
     [Fact]
@@ -119,7 +121,7 @@ public sealed class MakefileDetectorTests : IDisposable
             "\techo not_a_target: nothing\n" +
             "test:\n\techo t\n");
         var candidates = MakefileDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "make_build", "make_test" }, candidates);
+        Assert.Equal(new[] { "make_proj_build", "make_proj_test" }, candidates);
     }
 
     [Fact]
@@ -127,7 +129,7 @@ public sealed class MakefileDetectorTests : IDisposable
     {
         WriteMakefile("build:\n\techo b\n", name: "GNUmakefile");
         var c = MakefileDetector.Detect(_root).Single();
-        Assert.Equal("make_build", c.SuggestedName);
+        Assert.Equal("make_proj_build", c.SuggestedName);
         // Description references the actual filename used.
         Assert.Contains("GNUmakefile", c.Description);
     }

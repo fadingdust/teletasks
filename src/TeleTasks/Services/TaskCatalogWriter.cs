@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using TeleTasks.Discovery;
 using TeleTasks.Models;
 
 namespace TeleTasks.Services;
@@ -93,6 +94,26 @@ public static class TaskCatalogWriter
             {
                 bySource = catalog.Tasks.FirstOrDefault(t =>
                     string.Equals(t.Source, task.Source, StringComparison.OrdinalIgnoreCase));
+
+                // Legacy-source migration: project-level detectors used to emit
+                // un-scoped sources like "sh:run.sh" / "Makefile:build". After
+                // adding project-scoped sources ("sh:<project>:run.sh"), an
+                // existing legacy entry would otherwise be orphaned and a
+                // duplicate created. If we find an entry whose source is the
+                // un-scoped form AND whose workingDirectory matches the
+                // incoming task's, treat it as a hit — UpdateInPlace will
+                // rewrite the source to the new scoped form.
+                if (bySource is null && !string.IsNullOrEmpty(task.WorkingDirectory))
+                {
+                    var scope = TaskCandidate.ProjectScope(task.WorkingDirectory!);
+                    var legacy = LegacyUnscopedSource(task.Source!, scope);
+                    if (legacy is not null)
+                    {
+                        bySource = catalog.Tasks.FirstOrDefault(t =>
+                            string.Equals(t.Source, legacy, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(t.WorkingDirectory, task.WorkingDirectory, StringComparison.OrdinalIgnoreCase));
+                    }
+                }
             }
 
             if (bySource is not null)
@@ -145,6 +166,27 @@ public static class TaskCatalogWriter
     {
         var idx = source.LastIndexOf(':');
         return idx > 0 ? source[..idx] : source;
+    }
+
+    /// <summary>
+    /// Reverses the project-scope wrapping that detectors apply. Given a new-
+    /// format source like <c>sh:projectA:run.sh</c> and the scope that produced
+    /// it (<c>projectA</c>), returns the un-scoped equivalent <c>sh:run.sh</c>
+    /// so the merge can find legacy entries written before scoping existed.
+    /// Returns null when the scope segment isn't present in the source.
+    /// </summary>
+    private static string? LegacyUnscopedSource(string newSource, string scope)
+    {
+        if (string.IsNullOrEmpty(newSource) || string.IsNullOrEmpty(scope)) return null;
+        var parts = newSource.Split(':');
+        for (var i = 0; i < parts.Length; i++)
+        {
+            if (string.Equals(parts[i], scope, StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Join(":", parts.Take(i).Concat(parts.Skip(i + 1)));
+            }
+        }
+        return null;
     }
 
     public static void Save(string path, TaskCatalog catalog)

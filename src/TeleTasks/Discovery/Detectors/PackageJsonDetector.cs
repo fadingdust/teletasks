@@ -18,6 +18,7 @@ public static class PackageJsonDetector
             if (!doc.RootElement.TryGetProperty("scripts", out var scripts) ||
                 scripts.ValueKind != JsonValueKind.Object) yield break;
 
+            var scope = TaskCandidate.ProjectScope(projectPath);
             foreach (var script in scripts.EnumerateObject())
             {
                 var name = script.Name;
@@ -27,8 +28,8 @@ public static class PackageJsonDetector
 
                 yield return new TaskCandidate
                 {
-                    Source = $"package.json:{name}",
-                    SuggestedName = TaskCandidate.Sanitize($"npm_{name}"),
+                    Source = $"package.json:{scope}:{name}",
+                    SuggestedName = TaskCandidate.Sanitize($"npm_{scope}_{name}"),
                     Description = string.IsNullOrEmpty(body)
                         ? $"Run `npm run {name}`."
                         : $"Run `npm run {name}` ({body}).",

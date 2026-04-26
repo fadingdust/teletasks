@@ -247,11 +247,20 @@ looks in `bin/Release/...` and silently drops the config.
 
 ### Source-keyed catalog merge
 
-Each discovered task carries a stable `source` ("Makefile:build",
-"py:argparse:render.py"). On re-run, merge updates entries by source
+Each discovered task carries a stable `source` scoped by the project's
+basename ("Makefile:projectA:build", "py:argparse:projectA:render.py",
+"sh:projectA:run.sh"). The project segment exists so two distinct
+projects that each have a `run.sh` or a `build` Make target don't
+collide in the catalog. On re-run, merge updates entries by source
 rather than by name, which means hand-renaming a task or editing
 `enabled` doesn't get clobbered. Hand-written tasks (no source) are
 never touched.
+
+Legacy entries (pre-scope, source like "Makefile:build") are upgraded
+in place on the next discover run: the merge looks for a legacy
+un-scoped form whose `workingDirectory` matches the incoming task's,
+treats it as a hit, and rewrites the source to the new scoped form.
+Same-tasks.json upgrade story.
 
 ### Output-spec promoter / sh-wrapper resolver as separate passes
 

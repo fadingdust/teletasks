@@ -195,10 +195,12 @@ if __name__ == '__main__':
             description = $"{description} (boolean flags: {string.Join(", ", skipped)} — edit args to enable)";
         }
 
+        var scope = TaskCandidate.ProjectScope(workingDirectory);
         return new TaskCandidate
         {
-            Source = $"py:argparse:{Path.GetFileName(filePath)}",
-            SuggestedName = TaskCandidate.Sanitize($"py_{Path.GetFileNameWithoutExtension(filePath)}"),
+            Source = $"py:argparse:{scope}:{Path.GetFileName(filePath)}",
+            SuggestedName = TaskCandidate.Sanitize(
+                $"py_{scope}_{Path.GetFileNameWithoutExtension(filePath)}"),
             Description = description,
             Command = python,
             Args = args,

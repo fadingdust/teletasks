@@ -76,4 +76,29 @@ public sealed class TaskCandidate
         if (char.IsDigit(name[0])) name = "_" + name;
         return name;
     }
+
+    /// <summary>
+    /// Sanitised basename of a project directory, used by project-level
+    /// detectors (Makefile / sh / argparse Python / package.json /
+    /// pyproject.toml / justfile / .vscode/tasks.json) to scope their
+    /// <c>Source</c> and <c>SuggestedName</c> so two projects that each
+    /// have a <c>run.sh</c> or a <c>build</c> Make target don't collide
+    /// in the catalogue. Same pattern Git discovery has always used
+    /// (<c>git:&lt;reponame&gt;:status</c>).
+    ///
+    /// Returns "project" as a safe fallback when the path can't be
+    /// resolved to a meaningful basename (e.g. discover invoked at "/").
+    /// </summary>
+    public static string ProjectScope(string projectPath)
+    {
+        if (string.IsNullOrEmpty(projectPath)) return "project";
+        string absolute;
+        try { absolute = Path.GetFullPath(projectPath); }
+        catch { return "project"; }
+        var trimmed = absolute.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var name = Path.GetFileName(trimmed);
+        if (string.IsNullOrEmpty(name)) return "project";
+        var sanitised = Sanitize(name);
+        return string.IsNullOrEmpty(sanitised) ? "project" : sanitised;
+    }
 }

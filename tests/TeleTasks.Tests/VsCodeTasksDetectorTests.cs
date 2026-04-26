@@ -5,18 +5,20 @@ namespace TeleTasks.Tests;
 
 public sealed class VsCodeTasksDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public VsCodeTasksDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-vsc-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-vsc-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
         Directory.CreateDirectory(Path.Combine(_root, ".vscode"));
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void WriteVsCodeTasks(string contents)
@@ -39,7 +41,7 @@ public sealed class VsCodeTasksDetectorTests : IDisposable
 
         var candidates = VsCodeTasksDetector.Detect(_root).ToList();
         Assert.Equal(2, candidates.Count);
-        Assert.Equal(new[] { "vsc_build", "vsc_test" }, candidates.Select(c => c.SuggestedName).ToArray());
+        Assert.Equal(new[] { "vsc_proj_build", "vsc_proj_test" }, candidates.Select(c => c.SuggestedName).ToArray());
     }
 
     [Fact]
@@ -127,7 +129,7 @@ public sealed class VsCodeTasksDetectorTests : IDisposable
             """);
 
         var names = VsCodeTasksDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "vsc_build" }, names);
+        Assert.Equal(new[] { "vsc_proj_build" }, names);
     }
 
     [Fact]
@@ -147,7 +149,7 @@ public sealed class VsCodeTasksDetectorTests : IDisposable
             """);
 
         var c = VsCodeTasksDetector.Detect(_root).Single();
-        Assert.Equal("vsc_build", c.SuggestedName);
+        Assert.Equal("vsc_proj_build", c.SuggestedName);
     }
 
     [Fact]
@@ -182,6 +184,6 @@ public sealed class VsCodeTasksDetectorTests : IDisposable
             """);
 
         var c = VsCodeTasksDetector.Detect(_root).Single();
-        Assert.Equal(".vscode/tasks.json:ship", c.Source);
+        Assert.Equal(".vscode/tasks.json:proj:ship", c.Source);
     }
 }

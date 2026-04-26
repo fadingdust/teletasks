@@ -26,6 +26,7 @@ public static class VsCodeTasksDetector
             if (!doc.RootElement.TryGetProperty("tasks", out var tasks) ||
                 tasks.ValueKind != JsonValueKind.Array) yield break;
 
+            var scope = TaskCandidate.ProjectScope(projectPath);
             foreach (var entry in tasks.EnumerateArray())
             {
                 if (entry.ValueKind != JsonValueKind.Object) continue;
@@ -63,8 +64,8 @@ public static class VsCodeTasksDetector
 
                 yield return new TaskCandidate
                 {
-                    Source = $".vscode/tasks.json:{label}",
-                    SuggestedName = TaskCandidate.Sanitize($"vsc_{label}"),
+                    Source = $".vscode/tasks.json:{scope}:{label}",
+                    SuggestedName = TaskCandidate.Sanitize($"vsc_{scope}_{label}"),
                     Description = detail ?? $"VS Code task: {label}",
                     Command = command,
                     Args = args,

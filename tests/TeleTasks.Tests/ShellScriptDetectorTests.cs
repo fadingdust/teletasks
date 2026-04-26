@@ -6,17 +6,22 @@ namespace TeleTasks.Tests;
 
 public sealed class ShellScriptDetectorTests : IDisposable
 {
+    // Project root has a stable basename "proj" so every detector emits
+    // `sh:proj:...` / `sh_proj_...` and assertions stay readable. The
+    // unique guid lives one level up.
+    private readonly string _parent;
     private readonly string _root;
 
     public ShellScriptDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-shdetect-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-shdetect-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void Write(string name, string contents)
@@ -35,9 +40,9 @@ public sealed class ShellScriptDetectorTests : IDisposable
         var candidates = ShellScriptDetector.Detect(_root).ToList();
 
         Assert.Equal(2, candidates.Count);
-        Assert.Contains(candidates, c => c.SuggestedName == "sh_a");
-        Assert.Contains(candidates, c => c.SuggestedName == "sh_b");
-        Assert.DoesNotContain(candidates, c => c.SuggestedName == "sh_skipped");
+        Assert.Contains(candidates, c => c.SuggestedName == "sh_proj_a");
+        Assert.Contains(candidates, c => c.SuggestedName == "sh_proj_b");
+        Assert.DoesNotContain(candidates, c => c.SuggestedName == "sh_proj_skipped");
     }
 
     [Fact]
@@ -195,7 +200,7 @@ public sealed class ShellScriptDetectorTests : IDisposable
     {
         Write("anything.sh", "#!/bin/bash\n");
         var c = ShellScriptDetector.Detect(_root).Single();
-        Assert.Equal("sh:anything.sh", c.Source);
+        Assert.Equal("sh:proj:anything.sh", c.Source);
     }
 
     [Fact]

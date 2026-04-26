@@ -9,6 +9,7 @@ public static class MakefileDetector
 
     public static IEnumerable<TaskCandidate> Detect(string projectPath)
     {
+        var scope = TaskCandidate.ProjectScope(projectPath);
         foreach (var name in new[] { "Makefile", "makefile", "GNUmakefile" })
         {
             var path = Path.Combine(projectPath, name);
@@ -45,8 +46,8 @@ public static class MakefileDetector
 
                 yield return new TaskCandidate
                 {
-                    Source = $"Makefile:{target}",
-                    SuggestedName = TaskCandidate.Sanitize($"make_{target}"),
+                    Source = $"Makefile:{scope}:{target}",
+                    SuggestedName = TaskCandidate.Sanitize($"make_{scope}_{target}"),
                     Description = description,
                     Command = "/usr/bin/make",
                     Args = new List<string> { "-C", projectPath, target },

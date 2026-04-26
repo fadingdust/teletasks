@@ -10,17 +10,19 @@ namespace TeleTasks.Tests;
 /// </summary>
 public sealed class ArgparsePythonDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public ArgparsePythonDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-pyargs-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-pyargs-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private string WritePy(string name, string source)
@@ -47,7 +49,7 @@ public sealed class ArgparsePythonDetectorTests : IDisposable
             """);
 
         var c = ArgparsePythonDetector.Detect(_root).Single();
-        Assert.Equal("py_render", c.SuggestedName);
+        Assert.Equal("py_proj_render", c.SuggestedName);
         var prompt = c.Parameters.Single(x => x.Name == "prompt");
         Assert.Equal("string", prompt.Type);
         Assert.True(prompt.Required);
@@ -195,7 +197,7 @@ public sealed class ArgparsePythonDetectorTests : IDisposable
             """);
 
         var names = ArgparsePythonDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "py_entry" }, names);
+        Assert.Equal(new[] { "py_proj_entry" }, names);
     }
 
     [SkippableFact]
@@ -215,7 +217,7 @@ public sealed class ArgparsePythonDetectorTests : IDisposable
 
         var c = ArgparsePythonDetector.DetectFromFile(path, _root);
         Assert.NotNull(c);
-        Assert.Equal("py_deep", c!.SuggestedName);
+        Assert.Equal("py_proj_deep", c!.SuggestedName);
         Assert.Contains(c.Parameters, p => p.Name == "prompt");
     }
 

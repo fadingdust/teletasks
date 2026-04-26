@@ -5,17 +5,19 @@ namespace TeleTasks.Tests;
 
 public sealed class PackageJsonDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public PackageJsonDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-pkg-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-pkg-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void WritePackageJson(string contents)
@@ -38,7 +40,7 @@ public sealed class PackageJsonDetectorTests : IDisposable
             """);
 
         var names = PackageJsonDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "npm_build", "npm_test", "npm_lint" }, names);
+        Assert.Equal(new[] { "npm_proj_build", "npm_proj_test", "npm_proj_lint" }, names);
     }
 
     [Fact]
@@ -97,7 +99,7 @@ public sealed class PackageJsonDetectorTests : IDisposable
             """);
 
         var c = PackageJsonDetector.Detect(_root).Single();
-        Assert.Equal("package.json:ship", c.Source);
+        Assert.Equal("package.json:proj:ship", c.Source);
     }
 
     [Fact]
@@ -111,7 +113,7 @@ public sealed class PackageJsonDetectorTests : IDisposable
             """);
 
         var candidates = PackageJsonDetector.Detect(_root).ToList();
-        var weird = candidates.Single(c => c.SuggestedName == "npm_weird");
+        var weird = candidates.Single(c => c.SuggestedName == "npm_proj_weird");
         Assert.Equal("Run `npm run weird`.", weird.Description);
     }
 }

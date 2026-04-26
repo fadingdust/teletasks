@@ -14,6 +14,7 @@ public static class PyprojectDetector
         var path = Path.Combine(projectPath, "pyproject.toml");
         if (!File.Exists(path)) yield break;
 
+        var scope = TaskCandidate.ProjectScope(projectPath);
         string? section = null;
         foreach (var line in File.ReadAllLines(path))
         {
@@ -36,8 +37,8 @@ public static class PyprojectDetector
 
             yield return new TaskCandidate
             {
-                Source = $"pyproject.toml:{section}.{name}",
-                SuggestedName = TaskCandidate.Sanitize($"py_{name}"),
+                Source = $"pyproject.toml:{scope}:{section}.{name}",
+                SuggestedName = TaskCandidate.Sanitize($"py_{scope}_{name}"),
                 Description = $"Run console script `{name}` ({value}) from pyproject.toml.",
                 Command = "/usr/bin/env",
                 Args = new List<string> { name },

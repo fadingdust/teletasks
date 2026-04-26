@@ -21,6 +21,8 @@ public static class ShellScriptDetector
         }
         catch (UnauthorizedAccessException) { yield break; }
 
+        var scope = TaskCandidate.ProjectScope(projectPath);
+
         foreach (var file in files)
         {
             var lines = File.ReadAllLines(file);
@@ -43,17 +45,18 @@ public static class ShellScriptDetector
             }
 
             var parameters = positional;
+            var stem = Path.GetFileNameWithoutExtension(file);
 
             yield return new TaskCandidate
             {
-                Source = $"sh:{Path.GetFileName(file)}",
-                SuggestedName = TaskCandidate.Sanitize($"sh_{Path.GetFileNameWithoutExtension(file)}"),
+                Source = $"sh:{scope}:{Path.GetFileName(file)}",
+                SuggestedName = TaskCandidate.Sanitize($"sh_{scope}_{stem}"),
                 Description = description,
                 Command = "/bin/bash",
                 Args = args,
                 WorkingDirectory = projectPath,
                 Parameters = parameters,
-                SourceText = ReadFullForRegex(lines)
+                SourceText = ReadFullForRegex(string.Join('\n', lines))
             };
         }
     }
@@ -62,9 +65,8 @@ public static class ShellScriptDetector
     // ShellWrapperResolver and future scanners see the full body. The LLM
     // polish step in DiscoverCommand applies its own preview-sized cap when
     // it actually feeds the text to the model.
-    private static string ReadFullForRegex(string[] lines, int max = 2_000_000)
+    private static string ReadFullForRegex(string joined, int max = 2_000_000)
     {
-        var joined = string.Join('\n', lines);
         if (joined.Length <= max) return joined;
         return joined[..max] + "\n... (truncated)";
     }

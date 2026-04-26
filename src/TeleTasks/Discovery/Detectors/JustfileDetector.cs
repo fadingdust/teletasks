@@ -18,6 +18,7 @@ public static class JustfileDetector
 
     public static IEnumerable<TaskCandidate> Detect(string projectPath)
     {
+        var scope = TaskCandidate.ProjectScope(projectPath);
         foreach (var name in new[] { "justfile", "Justfile", ".justfile" })
         {
             var path = Path.Combine(projectPath, name);
@@ -48,8 +49,8 @@ public static class JustfileDetector
 
                 yield return new TaskCandidate
                 {
-                    Source = $"justfile:{recipe}",
-                    SuggestedName = TaskCandidate.Sanitize($"just_{recipe}"),
+                    Source = $"justfile:{scope}:{recipe}",
+                    SuggestedName = TaskCandidate.Sanitize($"just_{scope}_{recipe}"),
                     Description = description,
                     Command = "/usr/bin/env",
                     Args = new[] { "just", "--justfile", path, "--working-directory", projectPath }

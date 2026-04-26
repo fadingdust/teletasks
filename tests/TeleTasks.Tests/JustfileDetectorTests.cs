@@ -5,17 +5,19 @@ namespace TeleTasks.Tests;
 
 public sealed class JustfileDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public JustfileDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-just-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-just-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void WriteJustfile(string contents, string name = "justfile")
@@ -35,7 +37,7 @@ public sealed class JustfileDetectorTests : IDisposable
             """);
 
         var candidates = JustfileDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "just_build", "just_test" }, candidates);
+        Assert.Equal(new[] { "just_proj_build", "just_proj_test" }, candidates);
     }
 
     [Fact]
@@ -125,7 +127,7 @@ public sealed class JustfileDetectorTests : IDisposable
             """);
 
         var names = JustfileDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "just_build" }, names);
+        Assert.Equal(new[] { "just_proj_build" }, names);
     }
 
     [Fact]
@@ -140,7 +142,7 @@ public sealed class JustfileDetectorTests : IDisposable
             """);
 
         var names = JustfileDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "just_build" }, names);
+        Assert.Equal(new[] { "just_proj_build" }, names);
     }
 
     [Fact]
@@ -148,7 +150,7 @@ public sealed class JustfileDetectorTests : IDisposable
     {
         WriteJustfile("ship:\n    echo s\n");
         var c = JustfileDetector.Detect(_root).Single();
-        Assert.Equal("justfile:ship", c.Source);
+        Assert.Equal("justfile:proj:ship", c.Source);
     }
 
     [Fact]
@@ -156,7 +158,7 @@ public sealed class JustfileDetectorTests : IDisposable
     {
         WriteJustfile("build:\n    echo b\n", name: "Justfile");
         var c = JustfileDetector.Detect(_root).Single();
-        Assert.Equal("just_build", c.SuggestedName);
+        Assert.Equal("just_proj_build", c.SuggestedName);
     }
 
     [Fact]

@@ -168,4 +168,91 @@ public class TaskCatalogWriterTests
         // log_a was in the same category as the incoming, so it got pruned.
         Assert.DoesNotContain(catalog.Tasks, t => t.Source == "git:repo-a:log");
     }
+
+    // ─── legacy-source migration ────────────────────────────────────────
+
+    private static TaskDefinition TaskAt(string name, string source, string workingDirectory)
+    {
+        var t = Task(name, source);
+        t.WorkingDirectory = workingDirectory;
+        return t;
+    }
+
+    [Fact]
+    public void Merge_upgrades_legacy_unscoped_source_to_the_new_project_scoped_form()
+    {
+        // Pre-scope shape: detectors used to emit "sh:run.sh". Post-scope:
+        // "sh:proj:run.sh". The legacy entry must be updated in place,
+        // not duplicated, so existing catalogs survive the upgrade.
+        var legacy = TaskAt("sh_run", "sh:run.sh", "/home/me/proj");
+        legacy.Description = "old description";
+        legacy.Enabled = false;
+        var catalog = new TaskCatalog { Tasks = { legacy } };
+
+        var incoming = TaskAt("sh_proj_run", "sh:proj:run.sh", "/home/me/proj");
+        incoming.Description = "fresh description";
+
+        var result = TaskCatalogWriter.Merge(catalog, new[] { incoming });
+
+        Assert.Equal(0, result.Added);
+        Assert.Equal(1, result.Updated);
+        Assert.Single(catalog.Tasks);
+        // Source rewritten to the new scoped form on the existing record.
+        Assert.Equal("sh:proj:run.sh", catalog.Tasks[0].Source);
+        // UpdateInPlace refreshes Description but keeps Name and Enabled.
+        Assert.Equal("fresh description", catalog.Tasks[0].Description);
+        Assert.Equal("sh_run", catalog.Tasks[0].Name);          // user's name preserved
+        Assert.False(catalog.Tasks[0].Enabled);                  // user's enabled flag preserved
+    }
+
+    [Fact]
+    public void Merge_does_not_upgrade_legacy_when_workingDirectory_disagrees()
+    {
+        // Same legacy source, different working directory — could be a stale
+        // entry from an entirely different project. Don't claim it.
+        var legacy = TaskAt("sh_run", "sh:run.sh", "/home/me/some-other-project");
+        var catalog = new TaskCatalog { Tasks = { legacy } };
+
+        var incoming = TaskAt("sh_proj_run", "sh:proj:run.sh", "/home/me/proj");
+
+        var result = TaskCatalogWriter.Merge(catalog, new[] { incoming });
+
+        Assert.Equal(1, result.Added);          // appended, not upgraded
+        Assert.Equal(0, result.Updated);
+        Assert.Equal(2, catalog.Tasks.Count);
+    }
+
+    [Fact]
+    public void Merge_handles_legacy_upgrade_for_multi_segment_source_prefixes()
+    {
+        // py:argparse:render.py → py:argparse:proj:render.py — the scope
+        // is inserted before the filename, after the multi-segment prefix.
+        var legacy = TaskAt("py_render", "py:argparse:render.py", "/home/me/proj");
+        var catalog = new TaskCatalog { Tasks = { legacy } };
+
+        var incoming = TaskAt("py_proj_render", "py:argparse:proj:render.py", "/home/me/proj");
+
+        TaskCatalogWriter.Merge(catalog, new[] { incoming });
+
+        Assert.Single(catalog.Tasks);
+        Assert.Equal("py:argparse:proj:render.py", catalog.Tasks[0].Source);
+    }
+
+    [Fact]
+    public void Merge_legacy_upgrade_only_runs_when_a_scoped_source_is_incoming()
+    {
+        // A second discover with the same un-scoped source (e.g. a hand-
+        // written task or a downgraded build) should match its legacy peer
+        // exactly without invoking the scope-strip fallback.
+        var existing = TaskAt("sh_run", "sh:run.sh", "/home/me/proj");
+        var catalog = new TaskCatalog { Tasks = { existing } };
+
+        var incoming = TaskAt("sh_run", "sh:run.sh", "/home/me/proj");
+
+        var result = TaskCatalogWriter.Merge(catalog, new[] { incoming });
+
+        Assert.Equal(1, result.Updated);
+        Assert.Single(catalog.Tasks);
+        Assert.Equal("sh:run.sh", catalog.Tasks[0].Source);    // unchanged
+    }
 }

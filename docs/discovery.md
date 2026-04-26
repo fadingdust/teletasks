@@ -45,9 +45,18 @@ Each detector reads its source and emits one or more `TaskCandidate`s. For
 | `ArgparsePythonDetector`      | top-level `*.py` files that import argparse — runs a Python AST helper to read `add_argument` calls without executing the file. Auto-detects a project venv (`.venv/bin/python` → `venv/bin/python` → `env/bin/python`, picking the first that exists) and uses it as the candidate's `Command`; falls back to system `python3`/`python` when no venv is present | `py_<name>` candidates with typed parameters, defaults, choices, help text |
 | `ShellScriptDetector`         | top-level `*.sh` files — `${1:-default}` and bare `$N` positional args, `getopts`, `# Description:` comments | `sh_<name>` candidates with positional parameters |
 
-Each candidate carries a stable `source` string (e.g. `Makefile:build`,
-`py:argparse:render.py`, `sh:run.sh`). On re-run, the merger uses this to
-update existing entries in place rather than appending duplicates.
+Each candidate carries a stable `source` string scoped by the project's
+basename (e.g. `Makefile:projectA:build`, `py:argparse:projectA:render.py`,
+`sh:projectA:run.sh`). On re-run, the merger uses this to update existing
+entries in place rather than appending duplicates. The project segment
+exists so two trees that each have a `run.sh` or a `build` Make target
+stay distinct in the catalog.
+
+> Legacy un-scoped sources (`Makefile:build`, `sh:run.sh`) from a pre-
+> scoping discover are upgraded automatically on the next discover run:
+> the merger looks for a legacy entry whose `workingDirectory` matches
+> the incoming task's, treats it as a hit, and rewrites the source to
+> the new scoped form in place.
 
 Each candidate also carries `SourceText` (the original file body, capped
 at 2-2.5 KB) — used by later passes for sidecar detection, wrapper
@@ -226,7 +235,7 @@ scripting.
 ```
 # interactive review — y/n; q quits the loop, default in [brackets]
 
-# py_render (py:argparse:render.py)
+# py_image_renderer_render (py:argparse:image-renderer:render.py)
 #   description: Render images from prompts via SDXL
 #   command:     python3 render.py --prompt {prompt} --output_dir {output_dir} ...
 #   workingDir:  /home/me/Projects/image-renderer

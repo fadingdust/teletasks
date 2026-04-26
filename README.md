@@ -298,7 +298,9 @@ non-interactive scripting.
 
 ### Re-running is safe
 
-Each discovered task has a stable `source` field (e.g. `Makefile:build`,
+Each discovered task has a stable `source` field scoped by the project's
+basename (e.g. `Makefile:projectA:build`, `sh:projectA:run.sh`,
+`py:argparse:projectA:render.py`,
 `git:teletasks:status`, `log:/var/log/syslog`). On re-run:
 
 - Existing tasks with the **same source** are **updated in place**. Their

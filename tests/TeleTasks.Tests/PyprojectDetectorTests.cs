@@ -5,17 +5,19 @@ namespace TeleTasks.Tests;
 
 public sealed class PyprojectDetectorTests : IDisposable
 {
+    private readonly string _parent;
     private readonly string _root;
 
     public PyprojectDetectorTests()
     {
-        _root = Path.Combine(Path.GetTempPath(), "teletasks-pyproj-" + Guid.NewGuid().ToString("N"));
+        _parent = Path.Combine(Path.GetTempPath(), "teletasks-pyproj-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(_parent, "proj");
         Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        try { Directory.Delete(_parent, recursive: true); } catch { }
     }
 
     private void WritePyproject(string contents)
@@ -37,7 +39,7 @@ public sealed class PyprojectDetectorTests : IDisposable
             """);
 
         var candidates = PyprojectDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "py_mycli", "py_other" }, candidates);
+        Assert.Equal(new[] { "py_proj_mycli", "py_proj_other" }, candidates);
     }
 
     [Fact]
@@ -52,7 +54,7 @@ public sealed class PyprojectDetectorTests : IDisposable
             """);
 
         var c = PyprojectDetector.Detect(_root).Single();
-        Assert.Equal("py_mytool", c.SuggestedName);
+        Assert.Equal("py_proj_mytool", c.SuggestedName);
     }
 
     [Fact]
@@ -92,7 +94,7 @@ public sealed class PyprojectDetectorTests : IDisposable
             """);
 
         var c = PyprojectDetector.Detect(_root).Single();
-        Assert.Equal("pyproject.toml:project.scripts.foo", c.Source);
+        Assert.Equal("pyproject.toml:proj:project.scripts.foo", c.Source);
     }
 
     [Fact]
@@ -123,7 +125,7 @@ public sealed class PyprojectDetectorTests : IDisposable
             """);
 
         var candidates = PyprojectDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Equal(new[] { "py_mycli" }, candidates);
+        Assert.Equal(new[] { "py_proj_mycli" }, candidates);
     }
 
     [Fact]
@@ -144,7 +146,7 @@ public sealed class PyprojectDetectorTests : IDisposable
             """);
 
         var candidates = PyprojectDetector.Detect(_root).Select(c => c.SuggestedName).ToArray();
-        Assert.Contains("py_a", candidates);
-        Assert.Contains("py_b", candidates);
+        Assert.Contains("py_proj_a", candidates);
+        Assert.Contains("py_proj_b", candidates);
     }
 }
