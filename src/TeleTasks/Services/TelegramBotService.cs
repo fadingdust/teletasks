@@ -21,6 +21,7 @@ public sealed class TelegramBotService : BackgroundService
     private readonly OllamaClient _ollama;
     private readonly OutputCollector _output;
     private readonly JobTracker _jobs;
+    private readonly ConversationStateTracker _conversation;
     private readonly ILogger<TelegramBotService> _logger;
 
     private TelegramBotClient? _bot;
@@ -34,6 +35,7 @@ public sealed class TelegramBotService : BackgroundService
         OllamaClient ollama,
         OutputCollector output,
         JobTracker jobs,
+        ConversationStateTracker conversation,
         ILogger<TelegramBotService> logger)
     {
         _options = options.Value;
@@ -43,6 +45,7 @@ public sealed class TelegramBotService : BackgroundService
         _ollama = ollama;
         _output = output;
         _jobs = jobs;
+        _conversation = conversation;
         _logger = logger;
     }
 
@@ -319,6 +322,25 @@ public sealed class TelegramBotService : BackgroundService
 
         try
         {
+            // If we're in the middle of collecting parameters from this user, the
+            // next non-slash message is the value for the current parameter. A
+            // slash command falls through and clears the pending state below.
+            var pending = _conversation.Get(chatId);
+            if (pending is not null && !text.StartsWith('/'))
+            {
+                await ContinueParameterCollectionAsync(chatId, pending, text, ct);
+                return;
+            }
+            if (text.StartsWith('/') && pending is not null)
+            {
+                _conversation.Clear(chatId);
+                await bot.SendMessage(chatId,
+                    $"Cancelled the pending {pending.Task.Name}.",
+                    cancellationToken: ct);
+                if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase)) return;
+                // Fall through so other slash commands still work.
+            }
+
             var dryRun = false;
             var routedText = text;
             if (text.StartsWith("/dry", StringComparison.OrdinalIgnoreCase) &&
@@ -340,7 +362,21 @@ public sealed class TelegramBotService : BackgroundService
 
             await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
 
-            var match = await _matcher.MatchAsync(routedText, ct);
+            // Fast path: when the user types exactly a task name, skip the
+            // LLM call entirely. Saves 20-30s on tiny models, avoids any
+            // chance of parameter hallucination, and the conversational
+            // prompt loop fills in every required parameter from scratch.
+            TaskMatch? match;
+            var trimmed = routedText.Trim();
+            var directHit = _registry.Find(trimmed);
+            if (directHit is not null)
+            {
+                match = new TaskMatch(directHit.Name, new Dictionary<string, object?>(), "exact task-name match");
+            }
+            else
+            {
+                match = await _matcher.MatchAsync(routedText, ct);
+            }
             if (match is null || string.IsNullOrEmpty(match.TaskName))
             {
                 var reason = match?.Reasoning;
@@ -384,6 +420,20 @@ public sealed class TelegramBotService : BackgroundService
             {
                 await bot.SendMessage(chatId, RenderDryRun(task, match.Parameters),
                     parseMode: ParseMode.Html, cancellationToken: ct);
+                return;
+            }
+
+            var missingRequired = task.Parameters
+                .Where(p => p.Required && !HasUsableValue(p, match.Parameters, routedText, task.Name))
+                .ToList();
+            if (missingRequired.Count > 0)
+            {
+                var state = _conversation.Begin(chatId, task, match.Parameters, missingRequired);
+                await bot.SendMessage(chatId,
+                    $"→ <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
+                    "Send each one in turn, or /cancel to abort.",
+                    parseMode: ParseMode.Html, cancellationToken: ct);
+                await PromptNextParameterAsync(chatId, state, ct);
                 return;
             }
 
@@ -453,6 +503,12 @@ public sealed class TelegramBotService : BackgroundService
                 break;
             case "/stop":
                 await HandleStopCommandAsync(chatId, text, cancellationToken);
+                break;
+            case "/cancel":
+                // The OnMessageAsync entry path already cleared any pending state
+                // when a slash command arrived; this branch just acknowledges.
+                await bot.SendMessage(chatId, "Nothing pending.",
+                    cancellationToken: cancellationToken);
                 break;
             default:
                 await bot.SendMessage(chatId, "Unknown command. Try /help.", cancellationToken: cancellationToken);
@@ -736,6 +792,60 @@ public sealed class TelegramBotService : BackgroundService
         return "exit unknown";
     }
 
+    /// <summary>
+    /// A required parameter is "missing" when:
+    ///   - absent from the matcher's extracted values, or
+    ///   - present but null / empty whitespace (small LLMs sometimes emit ""
+    ///     to satisfy a schema-required field), or
+    ///   - it's a string the model probably hallucinated — i.e. the value
+    ///     doesn't appear (case-insensitive substring) anywhere in the
+    ///     user's original message.
+    /// We'd rather ask the user than run with a blank or made-up value. The
+    /// hallucination guard only fires for strings; numbers/bools/enums are
+    /// trusted because the model has structural reasons to pick valid values
+    /// for those (and "five" → 5 wouldn't pass a substring check anyway).
+    /// </summary>
+    private static bool HasUsableValue(TaskParameter p, IReadOnlyDictionary<string, object?> values, string userMessage, string? taskName = null)
+    {
+        if (!values.TryGetValue(p.Name, out var v)) return false;
+        if (v is null) return false;
+        if (v is not string s) return true;
+        if (string.IsNullOrWhiteSpace(s)) return false;
+
+        // Strings only: check that the value plausibly came from the user's
+        // message. Skip the check entirely when there's no user text (e.g.
+        // future programmatic calls) — fall back to the trim check above.
+        if (string.IsNullOrEmpty(userMessage)) return true;
+
+        // Strip the task name from the search space. If the user just typed
+        // the task name ("sh_run_local"), tokens of a hallucinated value
+        // ("run.sh" → "run", "sh") that happen to also be tokens of the
+        // task name shouldn't be accepted as "the user said it". After
+        // stripping, an empty residual means the user really only named the
+        // task — every required string param is missing.
+        var searchText = userMessage;
+        if (!string.IsNullOrEmpty(taskName))
+        {
+            searchText = searchText.Replace(taskName, " ", StringComparison.OrdinalIgnoreCase);
+        }
+        if (string.IsNullOrWhiteSpace(searchText)) return false;
+
+        // The matcher may legitimately paraphrase ("syslog" → "/var/log/syslog")
+        // so we only require that any token of the value (>= 3 chars) appears
+        // in the residual message. A path like "run.sh" tokenizes to "run"
+        // and "sh"; a phrase like "the syslog file" matches via "syslog".
+        var tokens = s.Split(new[] { ' ', '\t', '/', '\\', '.', '_', '-', ',' },
+                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                      .Where(t => t.Length >= 3)
+                      .ToArray();
+        if (tokens.Length == 0) return true; // value is too short to verify; trust it
+        foreach (var t in tokens)
+        {
+            if (searchText.Contains(t, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     private static string FormatElapsed(TimeSpan span)
     {
         if (span.TotalSeconds < 60) return $"{(int)span.TotalSeconds}s";
@@ -754,8 +864,10 @@ public sealed class TelegramBotService : BackgroundService
         "  /jobs           - list active and recent long-running jobs\n" +
         "  /job N          - status, log tail, and current output for job N\n" +
         "  /stop N         - kill a running job\n" +
+        "  /cancel         - abort a pending parameter-collection prompt\n" +
         "  /whoami         - show your user/chat IDs\n" +
         "  /help           - this message\n\n" +
+        "If a task needs values you didn't supply, I'll ask for them one at a time.\n" +
         "Anything else is sent to the local LLM for matching.";
 
     private string BuildTaskList()
@@ -785,6 +897,70 @@ public sealed class TelegramBotService : BackgroundService
             }
         }
         return sb.ToString();
+    }
+
+    private async Task PromptNextParameterAsync(long chatId, PendingTaskState state, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+        var p = state.Remaining.Peek();
+
+        var sb = new StringBuilder();
+        sb.Append("What's the value for <code>").Append(HtmlEscape(p.Name)).Append("</code>");
+        sb.Append(" (").Append(HtmlEscape(p.Type)).Append(")?");
+        if (!string.IsNullOrWhiteSpace(p.Description))
+        {
+            sb.Append("\n<i>").Append(HtmlEscape(p.Description)).Append("</i>");
+        }
+        if (p.Enum is { Count: > 0 })
+        {
+            sb.Append("\nChoices: <code>").Append(HtmlEscape(string.Join(", ", p.Enum))).Append("</code>");
+        }
+        await bot.SendMessage(chatId, sb.ToString(),
+            parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+    }
+
+    private async Task ContinueParameterCollectionAsync(long chatId, PendingTaskState state, string text, CancellationToken cancellationToken)
+    {
+        var bot = _bot!;
+
+        if (state.Remaining.Count == 0)
+        {
+            // Defensive: shouldn't happen, but if it does, just clear and ignore.
+            _conversation.Clear(chatId);
+            return;
+        }
+
+        var current = state.Remaining.Peek();
+        if (!ParameterValueParser.TryParse(current, text, out var value, out var error))
+        {
+            _conversation.Touch(chatId);
+            await bot.SendMessage(chatId,
+                $"⚠️ {HtmlEscape(error ?? "Invalid value.")} Try again, or /cancel.",
+                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            return;
+        }
+
+        state.Remaining.Dequeue();
+        state.Collected[current.Name] = value;
+        _conversation.Touch(chatId);
+
+        if (state.Remaining.Count > 0)
+        {
+            await PromptNextParameterAsync(chatId, state, cancellationToken);
+            return;
+        }
+
+        // All required params collected — execute and clear.
+        var task = state.Task;
+        var collected = new Dictionary<string, object?>(state.Collected, StringComparer.OrdinalIgnoreCase);
+        _conversation.Clear(chatId);
+
+        await bot.SendMessage(chatId,
+            $"→ Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(collected))}",
+            parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+
+        var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
+        await SendResultAsync(chatId, result, cancellationToken);
     }
 
     private async Task SendResultAsync(long chatId, TaskExecutionResult result, CancellationToken cancellationToken)

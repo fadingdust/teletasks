@@ -92,6 +92,7 @@ builder.Services.AddSingleton<JobTracker>();
 builder.Services.AddSingleton<TaskExecutor>();
 builder.Services.AddSingleton<TaskMatcher>();
 builder.Services.AddSingleton<OllamaClient>();
+builder.Services.AddSingleton<ConversationStateTracker>();
 builder.Services.AddHttpClient(OllamaClient.HttpClientName);
 
 builder.Services.AddHostedService<TelegramBotService>();

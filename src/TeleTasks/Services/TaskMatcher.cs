@@ -44,8 +44,13 @@ Rules:
 - Only include parameter keys that the chosen task declares. Never invent
   parameters.
 - Use the parameter's declared type (string, integer, number, boolean).
-- If a required parameter is missing from the message, set "task" to null
-  and ask for it in "reasoning".
+- NEVER invent string values. A parameter's value MUST appear (paraphrased
+  is OK) in the user's message. If you can't find a value for a required
+  parameter in the message, OMIT that parameter entirely from "parameters"
+  — the bot will ask the user. Empty string ("") is NOT a valid value;
+  if the user didn't say it, leave the key out.
+- If most required parameters are missing, set "task" to null and ask
+  for them in "reasoning".
 - "results from X", "what did X produce" with a SPECIFIC named task →
   "_show_results". "How's the latest run going" with no task named →
   "_check_latest_job".
