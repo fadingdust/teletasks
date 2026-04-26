@@ -88,6 +88,42 @@ Probably needs a per-source heuristic table rather than one big regex.
 If user has Tasker / Termux configs, surface them as candidates. Niche
 but interesting for Android-PC bridging.
 
+### External venv resolution (pyenv-virtualenv, `~/.virtualenvs`, `WORKON_HOME`)
+The current Python venv probe in `ArgparsePythonDetector.ResolveProjectPython`
+only looks for in-tree layouts (`.venv/bin/python`, `venv/bin/python`,
+`env/bin/python`). Real-world setups also park venvs outside the project
+tree:
+- `pyenv-virtualenv` writes to `~/.pyenv/versions/<env>/bin/python`, with
+  the project linked via a `.python-version` file at the project root.
+- `virtualenvwrapper` / `pipenv` / classic mkvirtualenv use `$WORKON_HOME`
+  (default `~/.virtualenvs`).
+- Some projects pin via a `Pipfile` / `poetry.lock` and the venv lives
+  under `~/.cache/pypoetry/virtualenvs/<hash>/`.
+
+Plausible follow-up: read `.python-version` for pyenv, check
+`$WORKON_HOME` / `~/.virtualenvs/<basename(workingDirectory)>` for
+virtualenvwrapper, fall through to current in-tree probe if nothing
+matches.
+- Open: should it `pyenv exec python -V` to confirm the resolved python
+  actually runs, or trust the path?
+
+### Conda environment detection
+Conda layouts differ from venv:
+- Per-env path: `<conda-root>/envs/<name>/bin/python` rather than
+  `<env>/bin/python`.
+- Activation modifies `CONDA_PREFIX`, `CONDA_DEFAULT_ENV`, prepends
+  multiple directories to `PATH` (not just `bin`).
+- Project-pinned env via an `environment.yml` / `conda-meta/` directory
+  marker rather than a per-project venv folder.
+
+Probably worth a separate `CondaEnvironmentResolver` that walks
+`environment.yml` for the env name then resolves
+`$CONDA_HOME/envs/<name>/bin/python` (or `~/miniconda3/envs/...`,
+`~/anaconda3/envs/...`).
+- Open: do we need to set the full activation env vars (`CONDA_PREFIX`
+  etc.) or is invoking the env's python enough? Some packages (PyTorch,
+  CUDA libraries) read `CONDA_PREFIX` to locate their own resources.
+
 ---
 
 ## Job system
