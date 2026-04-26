@@ -59,6 +59,9 @@ JSON-Schema-constrained output.
   underlying script body so it can ground descriptions in actual code.
 - `--write`, `-o`, `--force-replace` — catalog merge knobs.
 - Source-keyed merge (idempotent re-runs).
+- `-i` / `--interactive` (in flight on `claude/output-spec-promotion`) —
+  per-candidate prompt: include?, long-running? (heuristic suggestion),
+  enabled? Pairs with `-w`.
 
 ### Configuration
 
@@ -114,7 +117,9 @@ work — no runtime changes.
 | Feature | Notes |
 |---|---|
 | `OutputSpecPromoter` | Auto-rewrite `Text` output to `Images` / `LogTail` / `File` based on parameter names (`output_dir`, `log_file`, etc.). Smart-glob detection for nested image dirs (`results/*/output`). |
-| `ShellWrapperResolver` | sh that wraps `python <file>.py` inherits the python's promoted output spec. Copies parameters the spec templates against (`{output_dir}`, `{lora}`) so substitution works on the shell side. |
+| `ShellWrapperResolver` | sh that wraps `python <file>.py` inherits the python's promoted output spec. Copies parameters the spec templates against (`{output_dir}`, `{lora}`) so substitution works on the shell side. Falls back to a lazy single-file scan when the python lives in a subdir below the discovery floor (e.g. `python scripts/foo.py`). |
+| 2 MB sh source budget | `ShellScriptDetector` keeps full script body (up to 2 MB) so regex-based wrapper / sidecar / param scans see everything. The LLM polish step truncates to a 2 KB preview at the call site instead. |
+| `--interactive` / `-i` | Per-candidate prompt loop after polish: include?, long-running? (heuristic suggestion based on imports / heavy params / venv activation), enabled? Pairs with `-w` to keep only confirmed entries. |
 | Verbose discover logs | Each pipeline pass logs why each candidate was promoted / skipped / matched. |
 
 ### `claude/long-running-jobs`

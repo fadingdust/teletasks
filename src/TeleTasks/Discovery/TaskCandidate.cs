@@ -18,7 +18,21 @@ public sealed class TaskCandidate
 
     public List<TaskParameter> Parameters { get; init; } = new();
 
-    public TaskOutputSpec Output { get; init; } = new() { Type = TaskOutputType.Text };
+    public TaskOutputSpec Output { get; set; } = new() { Type = TaskOutputType.Text };
+
+    /// <summary>
+    /// Set by the interactive review prompt. Null means "use the
+    /// TaskDefinition default" (enabled). Surfaced to tasks.json as
+    /// <c>enabled: false</c> when explicitly disabled by the user.
+    /// </summary>
+    public bool? Enabled { get; set; }
+
+    /// <summary>
+    /// Set by the interactive review prompt or future heuristics. Null
+    /// means "use the TaskDefinition default" (not long-running). Surfaced
+    /// to tasks.json as <c>longRunning: true</c> when set.
+    /// </summary>
+    public bool? LongRunning { get; set; }
 
     /// <summary>
     /// Discovery-only context: the script/recipe/file body that this candidate
@@ -37,7 +51,9 @@ public sealed class TaskCandidate
             Source = Source,
             Command = Command,
             WorkingDirectory = WorkingDirectory,
-            Output = Output
+            Output = Output,
+            Enabled = Enabled,
+            LongRunning = LongRunning
         };
         task.Args.AddRange(Args);
         task.Parameters.AddRange(Parameters);

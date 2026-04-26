@@ -258,6 +258,29 @@ dotnet run --project src/TeleTasks -- discover logs --path ~/.cache/myapp --recu
 By default, output goes to **stdout** so you can review and pipe it. Add `-w` to
 merge into `./tasks.json`, or `-o path/to/tasks.json` to write somewhere else.
 
+### Reviewing each candidate before saving
+
+Add `-i` (or `--interactive`) to step through each discovered task and decide:
+
+- **Add this task?** — drop installers, helper scripts, or anything that isn't a
+  real chat target.
+- **Long-running?** — the bot suggests `yes` when it sees ML imports
+  (`torch`, `diffusers`, `transformers`, ...), heavy parameter names (`epochs`,
+  `inference_steps`, `num_images`, ...), or a shell wrapper that activates a
+  venv before invoking python. Long-running tasks bypass the inline 60s timeout
+  and run as detached jobs (see `/jobs`, `/job N`, `/stop N`).
+- **Enabled?** — answer `n` to keep the entry in tasks.json but inactive
+  (`enabled: false`). Flip it on later by editing the file and `/reload`.
+
+Pairs with `-w` to write only what you confirmed:
+
+```bash
+dotnet run --project src/TeleTasks -- discover project --path ~/Projects/sdxl-docker --llm -i -w
+```
+
+Closed stdin (piped null, here-doc) → every prompt takes the default, useful for
+non-interactive scripting.
+
 ### Re-running is safe
 
 Each discovered task has a stable `source` field (e.g. `Makefile:build`,

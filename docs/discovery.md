@@ -191,6 +191,57 @@ Structural fields (name, command, args, parameter types, defaults,
 output spec) are NEVER written by the model — only the descriptions get
 refined.
 
+### 6. Interactive review (opt-in with `-i` / `--interactive`)
+
+Walks each candidate post-polish and asks three questions on stderr:
+
+1. **Add this task?** `[Y/n/q]` — `q` aborts the loop and writes whatever
+   was confirmed up to that point. Lets you drop installers, helper
+   scripts, or anything that isn't a real chat target.
+2. **Long-running?** `[Y/n]` — defaults follow a heuristic. The
+   suggestion fires when:
+   - the source body imports `torch`, `diffusers`, `transformers`,
+     `tensorflow`, `accelerate`, `safetensors`, or mentions
+     `stable_diffusion`;
+   - any parameter name contains `epochs`, `inference_steps`,
+     `num_iterations`, `max_iter`, `max_steps`, `n_steps`, `num_images`,
+     `number_of_images`, or `num_samples`;
+   - or for shell candidates, the body sources a venv (`.venv/bin/activate`
+     or `venv/bin/activate`) and invokes `python`.
+
+   The suggestion reason is shown inline so you know why the bot thinks
+   it's long-running. Long-running tasks bypass the inline 60s timeout
+   and run as detached jobs instead — see `docs/cookbook.md`.
+3. **Enabled?** `[Y/n]` — answering `n` writes `enabled: false` so the
+   task stays in the catalogue but isn't matched by chat. You can flip
+   it on later by editing tasks.json and `/reload`.
+
+Pairs with `--write` to keep only what you confirmed. Without `-w` the
+review still runs but its output is just the preview render.
+
+Stdin closed (piped null, here-doc, no terminal) → every prompt takes
+the default. So `discover project … -i -w </dev/null` accepts
+everything non-interactively, which is occasionally useful for
+scripting.
+
+```
+# interactive review — y/n; q quits the loop, default in [brackets]
+
+# py_render (py:argparse:render.py)
+#   description: Render images from prompts via SDXL
+#   command:     python3 render.py --prompt {prompt} --output_dir {output_dir} ...
+#   workingDir:  /home/me/Projects/sdxl-docker
+#   output:      Images (sidecars detected)
+#   parameters (4):
+#     - prompt (string) (required)
+#     - output_dir (string) [default: ./results/*/output]
+#     - inference_steps (integer) [default: 30]
+#     - guidance_scale (number) [default: 7.5]
+  Add this task? [Y/n/q] y
+  Long-running? [Y/n] (suggested: yes — imports diffusers) y
+  Enabled? [Y/n] y
+```
+
 ## Catalog merge
 
 After the pipeline runs, `TaskCatalogWriter.Merge` writes the candidates
@@ -224,6 +275,7 @@ when you've removed Makefile targets and want stale entries gone.
 | `--inspect` / `--no-inspect` | ON  | Run PathInspector to enrich descriptions with current-state notes. |
 | `--promote-output` / `--no-promote-output` | ON | Run OutputSpecPromoter + ShellWrapperResolver. |
 | `--llm` / `--no-llm`         | OFF | Run LLM polish step. Uses the configured Ollama model. |
+| `--interactive`, `-i`        | OFF | Per-candidate prompt: add?, long-running? (with heuristic suggestion), enabled? Pairs with `-w` to write only what you confirmed. Closed stdin → every prompt takes the default. |
 
 For `discover logs` specifically:
 

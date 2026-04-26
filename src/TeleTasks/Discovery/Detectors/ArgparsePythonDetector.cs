@@ -122,12 +122,10 @@ if __name__ == '__main__':
 ";
 
     private static readonly string[] PythonCandidates = { "python3", "python" };
+    private static readonly Lazy<string?> _resolvedPython = new(ResolvePython);
 
     public static IEnumerable<TaskCandidate> Detect(string projectPath)
     {
-        var python = ResolvePython();
-        if (python is null) yield break;
-
         IEnumerable<string> files;
         try
         {
@@ -137,44 +135,54 @@ if __name__ == '__main__':
 
         foreach (var file in files)
         {
-            string contents;
-            try { contents = File.ReadAllText(file); }
-            catch (IOException) { continue; }
-            if (!contents.Contains("argparse")) continue;
-
-            ArgparseResult? result;
-            try
-            {
-                result = RunHelper(python, file);
-            }
-            catch (Exception)
-            {
-                continue;
-            }
-            if (result is null) continue;
-            if (result.Arguments.Count == 0 && string.IsNullOrWhiteSpace(result.Description)) continue;
-
-            var (args, parameters, skipped) = BuildInvocation(file, result.Arguments);
-            var description = !string.IsNullOrWhiteSpace(result.Description)
-                ? result.Description!
-                : $"Run `{Path.GetFileName(file)}`.";
-            if (skipped.Count > 0)
-            {
-                description = $"{description} (boolean flags: {string.Join(", ", skipped)} — edit args to enable)";
-            }
-
-            yield return new TaskCandidate
-            {
-                Source = $"py:argparse:{Path.GetFileName(file)}",
-                SuggestedName = TaskCandidate.Sanitize($"py_{Path.GetFileNameWithoutExtension(file)}"),
-                Description = description,
-                Command = python,
-                Args = args,
-                WorkingDirectory = projectPath,
-                Parameters = parameters,
-                SourceText = TruncateForLlm(contents)
-            };
+            var candidate = DetectFromFile(file, projectPath);
+            if (candidate is not null) yield return candidate;
         }
+    }
+
+    /// <summary>
+    /// Run the argparse extractor against a single Python file and return a
+    /// candidate, or null if the file isn't a recognisable argparse script.
+    /// Used both by top-level <see cref="Detect"/> and on-demand by
+    /// <see cref="ShellWrapperResolver"/> when an sh script invokes a Python
+    /// file living below the discovery floor (e.g. <c>scripts/foo.py</c>).
+    /// </summary>
+    public static TaskCandidate? DetectFromFile(string filePath, string workingDirectory)
+    {
+        var python = _resolvedPython.Value;
+        if (python is null) return null;
+
+        string contents;
+        try { contents = File.ReadAllText(filePath); }
+        catch (IOException) { return null; }
+        if (!contents.Contains("argparse")) return null;
+
+        ArgparseResult? result;
+        try { result = RunHelper(python, filePath); }
+        catch { return null; }
+        if (result is null) return null;
+        if (result.Arguments.Count == 0 && string.IsNullOrWhiteSpace(result.Description)) return null;
+
+        var (args, parameters, skipped) = BuildInvocation(filePath, result.Arguments);
+        var description = !string.IsNullOrWhiteSpace(result.Description)
+            ? result.Description!
+            : $"Run `{Path.GetFileName(filePath)}`.";
+        if (skipped.Count > 0)
+        {
+            description = $"{description} (boolean flags: {string.Join(", ", skipped)} — edit args to enable)";
+        }
+
+        return new TaskCandidate
+        {
+            Source = $"py:argparse:{Path.GetFileName(filePath)}",
+            SuggestedName = TaskCandidate.Sanitize($"py_{Path.GetFileNameWithoutExtension(filePath)}"),
+            Description = description,
+            Command = python,
+            Args = args,
+            WorkingDirectory = workingDirectory,
+            Parameters = parameters,
+            SourceText = TruncateForLlm(contents)
+        };
     }
 
     private static string TruncateForLlm(string text, int max = 2500)

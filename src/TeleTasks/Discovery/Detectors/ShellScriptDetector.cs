@@ -53,15 +53,20 @@ public static class ShellScriptDetector
                 Args = args,
                 WorkingDirectory = projectPath,
                 Parameters = parameters,
-                SourceText = TruncateForLlm(string.Join('\n', lines))
+                SourceText = ReadFullForRegex(lines)
             };
         }
     }
 
-    private static string TruncateForLlm(string text, int max = 2000)
+    // Shell scripts are kept whole (up to 2 MB) so regex consumers like
+    // ShellWrapperResolver and future scanners see the full body. The LLM
+    // polish step in DiscoverCommand applies its own preview-sized cap when
+    // it actually feeds the text to the model.
+    private static string ReadFullForRegex(string[] lines, int max = 2_000_000)
     {
-        if (text.Length <= max) return text;
-        return text[..max] + "\n... (truncated)";
+        var joined = string.Join('\n', lines);
+        if (joined.Length <= max) return joined;
+        return joined[..max] + "\n... (truncated)";
     }
 
     private static string? ExtractHeaderDescription(string[] lines)
