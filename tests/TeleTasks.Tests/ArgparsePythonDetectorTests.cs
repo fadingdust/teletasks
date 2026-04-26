@@ -227,4 +227,131 @@ public sealed class ArgparsePythonDetectorTests : IDisposable
         File.WriteAllText(path, "print('hi')\n");
         Assert.Null(ArgparsePythonDetector.DetectFromFile(path, _root));
     }
+
+    [SkippableFact]
+    public void Detect_uses_dotvenv_python_when_present()
+    {
+        RequirePython();
+        // Create a .venv/bin/python that's a real symlink to the system python
+        // so the AST helper actually runs. The test is asserting we *picked*
+        // this path, not that the venv has any specific content.
+        var venvPython = CreateFakeVenv(".venv");
+        WritePy("render.py", """
+            import argparse
+            p = argparse.ArgumentParser()
+            p.add_argument('--prompt', required=True)
+            args = p.parse_args()
+            """);
+
+        var c = ArgparsePythonDetector.Detect(_root).Single();
+        Assert.Equal(venvPython, c.Command);
+    }
+
+    [SkippableFact]
+    public void Detect_uses_venv_directory_when_dotvenv_absent()
+    {
+        RequirePython();
+        var venvPython = CreateFakeVenv("venv");
+        WritePy("render.py", """
+            import argparse
+            p = argparse.ArgumentParser()
+            p.add_argument('--prompt', required=True)
+            args = p.parse_args()
+            """);
+
+        var c = ArgparsePythonDetector.Detect(_root).Single();
+        Assert.Equal(venvPython, c.Command);
+    }
+
+    [SkippableFact]
+    public void Detect_uses_env_directory_as_last_venv_fallback()
+    {
+        RequirePython();
+        var venvPython = CreateFakeVenv("env");
+        WritePy("render.py", """
+            import argparse
+            p = argparse.ArgumentParser()
+            p.add_argument('--prompt', required=True)
+            args = p.parse_args()
+            """);
+
+        var c = ArgparsePythonDetector.Detect(_root).Single();
+        Assert.Equal(venvPython, c.Command);
+    }
+
+    [SkippableFact]
+    public void Detect_prefers_dotvenv_over_venv_when_both_exist()
+    {
+        RequirePython();
+        var dotvenv = CreateFakeVenv(".venv");
+        CreateFakeVenv("venv");
+        WritePy("render.py", """
+            import argparse
+            p = argparse.ArgumentParser()
+            p.add_argument('--prompt', required=True)
+            args = p.parse_args()
+            """);
+
+        var c = ArgparsePythonDetector.Detect(_root).Single();
+        Assert.Equal(dotvenv, c.Command);
+    }
+
+    [SkippableFact]
+    public void Detect_falls_back_to_system_python_when_no_venv_present()
+    {
+        RequirePython();
+        WritePy("render.py", """
+            import argparse
+            p = argparse.ArgumentParser()
+            p.add_argument('--prompt', required=True)
+            args = p.parse_args()
+            """);
+
+        var c = ArgparsePythonDetector.Detect(_root).Single();
+        // System fallback uses the bare name "python3" (or "python"), not an
+        // absolute path under our tmp dir.
+        Assert.True(c.Command == "python3" || c.Command == "python",
+            $"expected system python fallback, got '{c.Command}'");
+    }
+
+    [Fact]
+    public void ResolveProjectPython_returns_dotvenv_path_when_only_dotvenv_present()
+    {
+        // No Python required for this one — we're asserting path probing only.
+        var venvBin = Path.Combine(_root, ".venv", "bin");
+        Directory.CreateDirectory(venvBin);
+        var venvPython = Path.Combine(venvBin, "python");
+        File.WriteAllText(venvPython, "");   // empty; existence is enough for File.Exists
+        Assert.Equal(venvPython, ArgparsePythonDetector.ResolveProjectPython(_root));
+    }
+
+    [Fact]
+    public void ResolveProjectPython_handles_empty_workingDirectory_gracefully()
+    {
+        // Empty / null workingDirectory shouldn't throw; should fall straight
+        // through to the system resolver.
+        var resolved = ArgparsePythonDetector.ResolveProjectPython(string.Empty);
+        // Either system python is on PATH (returns "python3"/"python") or it
+        // isn't (returns null). Both are valid; we just need no exception.
+        Assert.True(resolved is null || resolved == "python3" || resolved == "python");
+    }
+
+    /// <summary>
+    /// Drop a fake but executable Python at <c>{_root}/{venvName}/bin/python</c>.
+    /// The fake is a wrapper script that exec's into the real system python so
+    /// the AST helper genuinely runs, but the detector still sees the venv
+    /// path as the resolved Command.
+    /// </summary>
+    private string CreateFakeVenv(string venvName)
+    {
+        var binDir = Path.Combine(_root, venvName, "bin");
+        Directory.CreateDirectory(binDir);
+        var fake = Path.Combine(binDir, "python");
+        File.WriteAllText(fake, "#!/bin/sh\nexec python3 \"$@\"\n");
+        File.SetUnixFileMode(fake,
+            UnixFileMode.UserRead    | UnixFileMode.UserWrite    | UnixFileMode.UserExecute   |
+            UnixFileMode.GroupRead   | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead   | UnixFileMode.OtherExecute);
+        return fake;
+    }
 }

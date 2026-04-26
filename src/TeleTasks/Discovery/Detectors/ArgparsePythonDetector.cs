@@ -122,7 +122,8 @@ if __name__ == '__main__':
 ";
 
     private static readonly string[] PythonCandidates = { "python3", "python" };
-    private static readonly Lazy<string?> _resolvedPython = new(ResolvePython);
+    private static readonly string[] VenvDirectoryCandidates = { ".venv", "venv", "env" };
+    private static readonly Lazy<string?> _resolvedSystemPython = new(ResolvePython);
 
     public static IEnumerable<TaskCandidate> Detect(string projectPath)
     {
@@ -141,6 +142,28 @@ if __name__ == '__main__':
     }
 
     /// <summary>
+    /// Probe the project's working directory for a venv layout we recognise
+    /// (<c>.venv/bin/python</c> first, then <c>venv/bin/python</c>, then
+    /// <c>env/bin/python</c>) and return that absolute path. Falls back to
+    /// the memoised system <c>python3</c>/<c>python</c> resolution when no
+    /// venv is found. The returned executable is used both for the AST
+    /// helper (parse-time) and as the candidate's <c>Command</c> (run-time)
+    /// so a project's deps are visible end-to-end.
+    /// </summary>
+    public static string? ResolveProjectPython(string workingDirectory)
+    {
+        if (!string.IsNullOrEmpty(workingDirectory))
+        {
+            foreach (var venv in VenvDirectoryCandidates)
+            {
+                var candidate = Path.Combine(workingDirectory, venv, "bin", "python");
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+        return _resolvedSystemPython.Value;
+    }
+
+    /// <summary>
     /// Run the argparse extractor against a single Python file and return a
     /// candidate, or null if the file isn't a recognisable argparse script.
     /// Used both by top-level <see cref="Detect"/> and on-demand by
@@ -149,7 +172,7 @@ if __name__ == '__main__':
     /// </summary>
     public static TaskCandidate? DetectFromFile(string filePath, string workingDirectory)
     {
-        var python = _resolvedPython.Value;
+        var python = ResolveProjectPython(workingDirectory);
         if (python is null) return null;
 
         string contents;

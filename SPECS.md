@@ -139,6 +139,13 @@ JSON-Schema-constrained output.
   script body so regex-based wrapper / sidecar / param scans see
   everything. The LLM polish step truncates to a 2 KB preview at the
   call site.
+- **Venv-aware Python `Command`** — `ArgparsePythonDetector` probes
+  the project's working directory for `.venv/bin/python`, then
+  `venv/bin/python`, then `env/bin/python` (first match wins), and
+  uses that absolute path as the candidate's command. Tasks created
+  this way pick up the project's installed deps without any
+  per-task `source` wrangling. Falls back to system `python3` /
+  `python` when no venv is present.
 - **`-i` / `--interactive`** — per-candidate prompt loop after polish:
   include?, long-running? (heuristic suggestion based on imports /
   heavy params / venv activation), enabled? Pairs with `-w`.

@@ -42,7 +42,7 @@ Each detector reads its source and emits one or more `TaskCandidate`s. For
 | `PackageJsonDetector`         | `"scripts"` block in `package.json`            | `npm_<script>` candidates |
 | `PyprojectDetector`           | `[project.scripts]` and `[tool.poetry.scripts]` | `py_<entry>` candidates |
 | `VsCodeTasksDetector`         | `.vscode/tasks.json` entries (with comments / trailing commas) | `vsc_<label>` candidates |
-| `ArgparsePythonDetector`      | top-level `*.py` files that import argparse — runs a Python AST helper to read `add_argument` calls without executing the file | `py_<name>` candidates with typed parameters, defaults, choices, help text |
+| `ArgparsePythonDetector`      | top-level `*.py` files that import argparse — runs a Python AST helper to read `add_argument` calls without executing the file. Auto-detects a project venv (`.venv/bin/python` → `venv/bin/python` → `env/bin/python`, picking the first that exists) and uses it as the candidate's `Command`; falls back to system `python3`/`python` when no venv is present | `py_<name>` candidates with typed parameters, defaults, choices, help text |
 | `ShellScriptDetector`         | top-level `*.sh` files — `${1:-default}` and bare `$N` positional args, `getopts`, `# Description:` comments | `sh_<name>` candidates with positional parameters |
 
 Each candidate carries a stable `source` string (e.g. `Makefile:build`,
