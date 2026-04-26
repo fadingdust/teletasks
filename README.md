@@ -185,6 +185,20 @@ Re-running the script is safe — it republishes, rewrites the unit, and
 restarts. Pass `--no-publish` to skip the publish step when you only
 want to refresh the unit file.
 
+After a code change, refresh the running service with:
+
+```bash
+scripts/republish.sh                  # git pull → publish → restart
+scripts/republish.sh --no-pull        # publish local changes only
+scripts/republish.sh --no-restart     # publish but leave the service alone
+```
+
+The script uses `git pull --ff-only`, so divergent branches stop the
+pipeline before publishing — you fix the divergence manually rather
+than landing a half-merged tree on the running bot. After restart it
+tails the last 10 journal lines so you see immediately whether the
+new build came up.
+
 Daily ops:
 
 ```bash
