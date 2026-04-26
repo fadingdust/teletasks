@@ -60,6 +60,15 @@ public static class ParameterValueParser
                     }
                     value = match; error = null; return true;
                 }
+                // Empty / whitespace-only answer — the conversational loop is
+                // collecting *required* parameters, so a blank value isn't
+                // usable. Reprompt rather than running the task with "".
+                if (string.IsNullOrWhiteSpace(trimmed))
+                {
+                    value = null;
+                    error = "Please send a non-blank value.";
+                    return false;
+                }
                 value = trimmed; error = null; return true;
         }
     }

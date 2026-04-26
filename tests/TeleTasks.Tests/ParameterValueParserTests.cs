@@ -90,6 +90,23 @@ public class ParameterValueParserTests
         Assert.Equal("hello", value);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    [InlineData("  \t \n  ")]
+    public void TryParse_string_rejects_blank_input_so_the_loop_can_reprompt(string blank)
+    {
+        // Required string parameters can't sensibly take an empty value —
+        // the bot would run the task with --image_path "" or similar. Reject
+        // so ContinueParameterCollectionAsync can ask again.
+        var ok = ParameterValueParser.TryParse(Param("string"), blank, out var value, out var error);
+        Assert.False(ok);
+        Assert.Null(value);
+        Assert.NotNull(error);
+        Assert.Contains("non-blank", error!, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void TryParse_enum_accepts_case_insensitive_match_and_returns_canonical()
     {

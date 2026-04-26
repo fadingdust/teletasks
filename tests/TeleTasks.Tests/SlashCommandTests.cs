@@ -16,6 +16,9 @@ public class SlashCommandTests
     [InlineData("/cancel")]
     [InlineData("/job_5")]              // underscore allowed in verb
     [InlineData("/abc123")]             // digits after the leading letter
+    [InlineData("/help@MyBot")]         // group-chat bot mention suffix
+    [InlineData("/job@MyBot 5")]        // mention + arg
+    [InlineData("/stop@my_bot_99 12")]  // mention with digits/underscore
     public void Real_slash_commands_are_recognised(string text)
     {
         Assert.True(SlashCommand.IsCommand(text));
@@ -51,6 +54,10 @@ public class SlashCommandTests
     [InlineData("/-help")]              // first char of verb must be a letter
     [InlineData("/help-me")]            // hyphen in verb not allowed
     [InlineData("/help.me")]            // dot in verb not allowed (file-extension-shaped)
+    [InlineData("/@MyBot")]             // bare '@' before a verb is malformed
+    [InlineData("/help@")]              // mention with no bot name
+    [InlineData("/help@bad-bot")]       // hyphen in mentioned bot name
+    [InlineData("/help@bot.name")]      // dot in mentioned bot name
     public void Bot_command_grammar_rejects_non_word_verb_chars(string text)
     {
         Assert.False(SlashCommand.IsCommand(text));
