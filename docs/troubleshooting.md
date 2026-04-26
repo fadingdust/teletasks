@@ -142,11 +142,9 @@ For "show me the output of X" specifically, use the explicit form:
 …which bypasses the matcher entirely. Bot looks up the task by name,
 applies its parameter defaults, runs `OutputCollector.CollectAsync`
 against the current state of disk, sends the artifacts. No command
-execution. [in-flight: `claude/output-spec-promotion`]
+execution.
 
 ## "the bot keeps asking for parameters one by one"
-
-[in-flight: `claude/conversational-params`]
 
 That's the conversational-collection feature. When a task has `required:
 true` parameters that the matcher couldn't extract from your message, the
@@ -157,6 +155,15 @@ Make a parameter optional (or give it a `default`) to stop the prompt:
 ```jsonc
 { "name": "seed", "type": "integer", "required": false, "default": 42 }
 ```
+
+If you're seeing prompts even though you typed the values, the
+**hallucination guard** may be flagging them as suspect. The guard
+treats a required string value as "missing" when none of its ≥3-char
+tokens appear in the original message after the task name is stripped.
+False-positive workaround: include enough of the value verbatim in
+your message ("render with prompt='a forest at dawn'" rather than just
+"render some forest"), or set a static `default` so the guard never
+fires.
 
 ## "I'm getting Ollama 404 model not found"
 
@@ -243,11 +250,7 @@ on disk:
 ls /path/to/results/
 ```
 
-[Glob expansion: in-flight `claude/output-spec-promotion`]
-
 ## "/jobs is empty even though I have a render running"
-
-[in-flight: `claude/long-running-jobs`]
 
 Two possibilities:
 
@@ -257,6 +260,84 @@ Two possibilities:
   `~/.config/teletasks/jobs.json`. If your render's PID is alive but not
   listed, something deleted the file (e.g. a manual `rm -rf
   ~/.config/teletasks` or a fresh setup wizard run).
+
+## "/job N log tail is empty even though the script is doing things"
+
+Almost always Python (or similar) block-buffering stdout once it's
+redirected to a file. `setsid` redirects the wrapper's stdio, which
+flips Python from line-buffered to 4-KB-buffered output, so the tail
+file stays empty for long stretches.
+
+Pick one:
+
+```jsonc
+"env": { "PYTHONUNBUFFERED": "1" }   // task definition
+```
+
+```bash
+python -u render.py …                  # explicit unbuffered flag
+stdbuf -oL python render.py …          // wrap in stdbuf
+```
+
+The bot calls this out automatically: when `/job N` finds the log file
+exists but is whitespace, it tells you and recommends the three fixes
+above.
+
+## "/stop N said 'killed' but it shows exit unknown"
+
+If `/stop` reported success the job is `Killed = true` in the registry.
+The status panel shows `killed` rather than `exit unknown` —
+`exit unknown` only appears when the job ended without a `/stop` AND
+the wrapper never wrote its exit-code file (e.g. an external `kill -9`
+or the bot was down for the transition). After a `/stop`, the wrapper
+is dead before it can `echo $? > exitcode`, so the absence of an exit
+code is expected and the `Killed` flag is what the formatter reads.
+
+## "Job N pushed an image that was actually from Job M"
+
+Was a real bug, fixed in `af4befd`: the 30s notifier loop kept polling
+finished jobs and re-sending any artifact whose mtime was after that
+job's start, including artifacts produced by later runs into the same
+output directory. Two fixes layered:
+
+1. Progressive push gated on `!IsFinished || !CompletionNotified` —
+   each job gets exactly one final flush after it ends, then it stops
+   being polled.
+2. Finished-job mtime upper-bound at `FinishedAtUtc + 10s grace` —
+   defends the final flush against catching a successor's outputs.
+
+If you see this on an old build, update past `af4befd`.
+
+## "Same image arrives in chat 2-3 times for the same job"
+
+Different cause. Either:
+
+- The 30s push poller and `/job N` raced — both saw the artifact as
+  unseen on the same poll cycle. Rare; one push is enough.
+- `SeenArtifactPaths` got reset (e.g. you edited `jobs.json` by hand).
+
+If recurring, check `~/.config/teletasks/jobs.json` — each `JobRecord`
+has a `seenArtifacts` array that should grow monotonically as the
+notifier pushes.
+
+## "Bot ran my task with a value I never typed"
+
+Symptom: you sent "sh_run_local" with no arguments and the bot ran it
+with `arg1=run.sh` (or some similar plausible-looking value) instead
+of asking. The matcher hallucinated.
+
+The hallucination guard in `HasUsableValue` should catch this for
+required string parameters now (rejects values whose tokens don't
+appear in the user message). If it still slips through:
+
+- The value's tokens overlap with the task name itself. The guard
+  strips the task name from the search space precisely to avoid this,
+  but very long task names with many tokens may still let invented
+  values pass. Workaround: rename the task or add a static `default`
+  for the parameter.
+- The matching model is non-default. If you're on a model larger than
+  qwen2.5:0.5b / llama3.2:1b, hallucination should be rare; if you're
+  on a smaller one, results are unpredictable.
 
 ## Diagnostic toolbox at a glance
 

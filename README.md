@@ -16,10 +16,24 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
 
 - Define tasks in `tasks.json` (vscode-`tasks.json`-style) with a name, description,
   command, parameters, and an output spec.
-- Local intent matching via Ollama's `/api/chat` JSON mode — no cloud round-trip.
+- Local intent matching via Ollama's `/api/chat` with JSON Schema constraint —
+  no cloud round-trip. Tiny models (qwen2.5:0.5b, llama3.2:1b) stay reliable
+  because the response shape is locked.
 - Output types: `Text`, `File`, `Image`, `Images` (from a directory), `LogTail`.
 - Parameter substitution (`{name}`) inside `args`, `path`, `directory`, `caption`,
-  `env`, `workingDirectory`, etc.
+  `env`, `workingDirectory`, etc. Multi-pass for `output_dir = "./{lora}/output"`
+  references.
+- Glob expansion (`*` / `?`) in output paths, plus auto-diff captions from
+  paired image+sidecar files (e.g. `image.png` + `image.json`).
+- **Long-running jobs** — `longRunning: true` spawns detached, `/jobs`/`/job N`
+  surface state, the bot pushes new artifacts and a completion summary to chat
+  without you having to ask.
+- **Conversational parameter collection** — when a required parameter wasn't
+  extracted from the message (or the matcher hallucinated one), the bot asks
+  for each in turn. Typing the literal task name skips the LLM call entirely.
+- **Discovery** — auto-generate `tasks.json` from Makefile / justfile /
+  package.json / pyproject / `*.sh` / argparse-`*.py` / systemd / git / `*.log`
+  with optional LLM polish and an interactive review (`-i`).
 - Per-user / per-chat allow-list.
 - Per-task timeout, environment vars, working directory.
 - Hot-reload the catalog at runtime with `/reload`.
@@ -30,8 +44,9 @@ Telegram ──▶ TeleTasks (worker) ──▶ Ollama  (intent + parameters)
 |---|---|
 | [docs/cookbook.md](docs/cookbook.md)             | Annotated `tasks.json` recipes for the common patterns (latest screenshots, log tail, render with sidecar metadata, long-running jobs, shell-wraps-python, etc.). Copy & adapt. |
 | [docs/discovery.md](docs/discovery.md)           | What `discover` does, the pipeline phases, what each log line means, every flag's effect. |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Diagnostic patterns: "captionFrom=no — why?", "wrapper isn't inheriting", "discover wrote to the wrong place", and the quick toolbox of `where` / `/dry` / `/latest`. |
-| [SPECS.md](SPECS.md)                             | Running ledger of what's shipped on `main`, what's on open feature branches, what's on the backlog, and the design decisions worth remembering. |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Diagnostic patterns: "captionFrom=no — why?", "wrapper isn't inheriting", "discover wrote to the wrong place", "log tail empty mid-run", "bot ran with a value I never typed", and the quick toolbox of `where` / `/dry` / `/results`. |
+| [SPECS.md](SPECS.md)                             | Running ledger of what's shipped on `main`, what's on the backlog, and the design decisions worth remembering. |
+| [IDEAS.md](IDEAS.md)                             | Loose brainstorm file — rougher ideas that haven't graduated to SPECS.md yet. |
 
 ## Prerequisites
 
@@ -428,6 +443,7 @@ own the lifecycle.
   "command": "/usr/bin/env",
   "args": ["python3", "render.py", "--prompt", "{prompt}"],
   "parameters": [{ "name": "prompt", "type": "string", "required": true }],
+  "env": { "PYTHONUNBUFFERED": "1" },
   "output": {
     "type": "Images",
     "directory": "/home/me/Pictures/renders",
@@ -445,24 +461,37 @@ Log: /home/me/.config/teletasks/run-logs/render_loop-7-...log
 Use /job 7 to check progress, /stop 7 to kill.
 ```
 
-Three commands manage running and recently-finished jobs:
+The bot then **pushes results back to chat without you having to ask** — a
+30-second poller (`Telegram:JobPollSeconds`, set `0` to disable) walks active
+jobs, sends any new artifacts whose mtime is newer than the job's start, and
+posts a one-line completion summary when the job ends. Each unsolicited push
+has its caption tagged `Job 7 • render_loop` so you can tell it apart from
+explicit `/job 7` replies.
+
+Manual commands:
 
 - **`/jobs`** — active jobs first, then the last 10 finished
 - **`/job <N>`** — for job N: status, the last 30 lines of its log, AND the
   task's *original* output spec re-evaluated (so an `Images`-output task pulls
   the latest renders right into the chat, a `LogTail` task tails the live log,
-  etc.)
-- **`/stop <N>`** — SIGKILL the job's process tree
+  etc.). If the log file is empty mid-run, the bot points you at Python's
+  block-buffering footgun — set `PYTHONUNBUFFERED=1` (as above), or use
+  `python -u` / `stdbuf -oL`.
+- **`/stop <N>`** — kill the job. The bot verifies the kill actually took
+  effect and escalates to `kill -KILL -<pid>` against the session group if
+  `Process.Kill(entireProcessTree)` missed grandchildren that re-parented to
+  init. Stopped jobs show as `killed` (rather than `exit unknown`) in `/jobs`.
 
-Three matcher virtual routes also pick this up from natural language:
+Two matcher virtual routes pick this up from natural language:
 
 - "what's running?" / "any jobs?" → `/jobs`
 - "how's the render going?" / "is it done yet?" → `/job <latest>`
 
 State persists to `~/.config/teletasks/jobs.json`. If the bot restarts mid-job,
-running PIDs are reconciled at startup so jobs are still visible. Real exit
-codes are recovered when a job finishes naturally; killed jobs have `null`
-exit (we killed the wrapper before the exit code could be recorded).
+running PIDs are reconciled at startup via `/proc/<pid>/stat` so jobs are
+still visible. Real exit codes are recovered from the wrapper's exit-code
+sidecar file when a job finishes naturally; the `Killed` flag tracks
+`/stop`-ped jobs separately from genuinely unknown exits.
 
 ## Built-in commands
 
@@ -471,10 +500,18 @@ exit (we killed the wrapper before the exit code could be recorded).
 - `/reload` – reload `tasks.json` without restarting
 - `/dry <text>` – resolve a task and show what *would* run, without running it.
   Useful to verify the LLM picked the right one and parameters look right.
+- `/results <task>` – show the latest output of a task without re-running it
+  (Images / File / LogTail tasks only — Text tasks have no cached state)
 - `/jobs` – list active and recent long-running jobs
 - `/job <N>` – status, log tail, and current output for job N
-- `/stop <N>` – kill a running job
+- `/stop <N>` – kill a running job (verified — escalates to `kill -KILL` if
+  the initial process-tree walk doesn't take)
+- `/cancel` – abort a pending parameter-collection prompt
 - `/whoami` – show your user / chat IDs (handy for the allow-list)
+
+Typing the literal task name (`tail_log`, `sh_run_local`) is a fast path —
+the bot skips the LLM call and walks you through every required parameter
+via the conversational prompt loop.
 
 ## Disabling tasks
 
@@ -494,19 +531,30 @@ src/TeleTasks/
     TaskRegistry.cs              # loads tasks.json
     OllamaClient.cs              # /api/chat with format=json or JSON Schema
     TaskMatcher.cs               # NL → (task, parameters), schema-constrained
-    TaskExecutor.cs              # process invocation + parameter substitution
+    TaskExecutor.cs              # process invocation + parameter substitution,
+                                 #   incl. EvaluateOutputAsync for /results
     OutputCollector.cs           # text / file / image / images / log-tail
-    TelegramBotService.cs        # background polling + dispatch
+    PathGlob.cs                  # * / ? expansion in output paths
+    SidecarMetadata.cs           # auto-diff captions, fuzzy SiblingPath
+    JobTracker.cs                # detached spawn, /jobs registry, /proc reconcile
+    ConversationStateTracker.cs  # multi-turn parameter collection state
+    ParameterValueParser.cs      # type-coercion for user replies
+    TelegramBotService.cs        # background polling + dispatch + 30s notifier
     TaskCatalogWriter.cs         # load / merge / write tasks.json
-    ParameterTemplate.cs         # {name} substitution
+    ParameterTemplate.cs         # {name} substitution, multi-pass + cycle cap
   Cli/
     DiscoverCommand.cs           # `teletasks discover ...`
+    SetupCommand.cs              # interactive wizard
+    WhereCommand.cs              # show resolved config paths
   Discovery/
     TaskCandidate.cs
     ProjectDiscoverer.cs         # orchestrates per-project detectors
     SystemdDiscoverer.cs         # systemctl + journalctl
     GitDiscoverer.cs             # per-repo status/log/diff/branches (+gh)
     LogsDiscoverer.cs            # *.log files in a directory
+    PathInspector.cs             # current-state notes for path params
+    OutputSpecPromoter.cs        # parameter-name → output spec heuristics
+    ShellWrapperResolver.cs      # sh inheriting py output (+ lazy deep scan)
     Detectors/
       MakefileDetector.cs
       JustfileDetector.cs

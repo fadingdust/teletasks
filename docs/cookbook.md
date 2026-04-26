@@ -208,6 +208,9 @@ directories match, the freshest by mtime wins. Works in `Image.path`,
   "parameters": [
     { "name": "prompt", "type": "string", "required": true }
   ],
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  },
   "output": {
     "type": "Images",
     "directory": "/home/me/renders",
@@ -227,10 +230,32 @@ Log: /home/me/.config/teletasks/run-logs/render_long-7-...log
 Use /job 7 to check progress, /stop 7 to kill.
 ```
 
-`/job 7` later does a check-in: status, last 30 lines of the log, AND
-re-runs the output spec (so the latest renders come back to chat). `/stop 7`
-SIGKILLs the process tree. Jobs persist to `~/.config/teletasks/jobs.json`
-so they survive bot restart.
+The bot then pushes results back to the chat without you having to
+ask:
+
+- A 30s poller (`Telegram:JobPollSeconds`, set `0` to disable) re-runs
+  the output spec and sends any new artifacts. Each pushed image's
+  caption is tagged `Job 7 • render_long` so you can tell unsolicited
+  pushes apart from `/job 7` replies.
+- When the job finishes the bot sends a one-line summary
+  (`✅ Job 7 render_long ok after 4m 12s.`). Jobs `/stop`-ped show as
+  `killed` instead of `exit unknown`.
+- Use `/jobs` for the list, `/job 7` for a status check (header, log
+  tail, current artifacts), `/stop 7` to kill (verified — escalates to
+  `kill -KILL -<pid>` against the session group if `Process.Kill` is
+  partial). Natural-language "what's running?" / "how's the render
+  going?" routes to the same handlers.
+
+Jobs persist to `~/.config/teletasks/jobs.json` so they survive bot
+restart; `Reconcile` walks `/proc/<pid>/stat` at startup to detect any
+job that ended while the bot was down.
+
+> **Python stdout buffering footgun**: when stdout is redirected to a
+> file (which `setsid` does for us), Python switches from line buffering
+> to block buffering, so `/job N` log tails are empty for a long time.
+> The `PYTHONUNBUFFERED=1` env entry above fixes it; alternatives are
+> `python -u` or `stdbuf -oL python …`. The bot calls this out
+> explicitly when the log file exists but is whitespace.
 
 ---
 
@@ -380,3 +405,57 @@ Tasks with `enabled: false`:
 
 Useful for "I want this task in my repo for later but not active right now"
 or for hand-edited tasks you want to gate behind a manual re-enable.
+
+---
+
+## 14. Asking the user for missing parameters
+
+No special config — this kicks in automatically. When the matcher
+resolves a task but a required parameter wasn't extracted from the
+message (or was hallucinated by a small model), the bot asks for each
+missing value in turn:
+
+```
+You: tail a log
+Bot: → tail_log needs 1 more value(s). Send each one in turn,
+     or /cancel to abort.
+     What's the value for path?
+You: /var/log/syslog
+Bot: → Running tail_log (path=/var/log/syslog, lines=50)
+     [last 50 lines of /var/log/syslog]
+```
+
+The bot also recognises typing the literal task name as the fastest
+way into this flow:
+
+```
+You: tail_log
+```
+
+That's the **exact-task-name fast path** — the bot skips the LLM call
+entirely (saves 20-30s on tiny models), synthesizes an empty match,
+and walks you through every required parameter from scratch. Useful
+when you remember the task name but not the natural-language
+incantation.
+
+Replies are coerced by `ParameterValueParser`:
+
+- `integer` / `number` → must parse as the right type, otherwise reprompts.
+- `boolean` → accepts `y`/`yes`/`true`/`1` and `n`/`no`/`false`/`0`.
+- `enum` → must match one of the declared `enum` values; lists them on bad input.
+- `string` → trimmed; empty replies reprompt.
+
+Slash commands during a pending prompt clear the state automatically
+(so `/tasks`, `/help`, `/jobs` always work). Explicit `/cancel`
+acknowledges and exits the flow. Pending state self-expires after 15
+minutes idle.
+
+### Hallucination guard
+
+Small matchers (`qwen2.5:0.5b`) sometimes invent values for required
+string parameters to satisfy the JSON schema. The bot rejects values
+whose ≥3-character tokens don't appear in the original user message
+(after stripping the task name), treating them as missing and falling
+through to the prompt loop. Numbers / bools / enums skip the check
+because their valid space is small enough that hallucination is
+structurally constrained.
