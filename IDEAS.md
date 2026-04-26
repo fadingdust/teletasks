@@ -92,6 +92,32 @@ but interesting for Android-PC bridging.
 
 ## Job system
 
+### `/restart N` — re-run a previous job
+Take an existing `JobRecord`'s task + parameters and start a fresh job
+with the same inputs. Useful for "render failed at step 28, run it
+again" or quick iteration when the answer is the same parameters.
+Should the new job be a sibling (new id) or a continuation (same id,
+appended log)? Probably new id with a `RestartedFromJobId` field for
+traceability.
+- Lift: ~30 lines (slash command + `JobTracker.Restart(int oldId)`
+  that calls Start with the persisted task+params).
+- Open: should `/restart N` work for finished failures only, or also
+  restart a still-running job (i.e. `/stop N && /restart N`)?
+
+### Old jobs clearing / reset
+`jobs.json` accumulates indefinitely. After dozens of runs `/jobs` is
+cluttered with finished entries we don't care about. Two knobs:
+- Auto-prune finished jobs older than N days at startup
+  (`Telegram:JobRetentionDays`, default 14).
+- `/clear-jobs` slash command for manual purge of all finished jobs
+  (running ones survive). Confirm before executing.
+Run-log files in `~/.config/teletasks/run-logs/` should be pruned in
+sympathy — match `<task>-<id>-<ts>.log` against the surviving
+`JobRecord` ids and delete the orphans. Keep the still-running ones
+plus N most recent finished.
+- Open: separate retention for log files (you might want job records
+  gone but logs preserved on disk for grep)?
+
 ### PID-cookie hardening for `JobTracker`
 Compare `/proc/<pid>` start-time against `job.StartedAtUtc` in
 `Reconcile` so a recycled PID after long bot downtime doesn't look
