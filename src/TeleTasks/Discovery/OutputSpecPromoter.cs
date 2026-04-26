@@ -161,6 +161,17 @@ public static class OutputSpecPromoter
         if (bare is "output" or "outputs" or "results" or "renders" or "samples" or "out" or "outdir")
             return OutputKind.ImagesDir;
 
+        // Compound bare names that don't decompose into clean tokens via the
+        // splitter (no separator → "logfile" stays as one token "logfile",
+        // not ["log", "file"]). Caught here as a fallback for the few common
+        // shapes we still want to recognise.
+        if (bare is "logfile" or "logpath")
+            return OutputKind.LogFile;
+        if (bare is "outputfile" or "outputpath" or "outpath" or "outfile")
+            return OutputKind.OutputFile;
+        if (bare is "outputdir" or "outputdirectory" or "outputfolder" or "resultsdir")
+            return OutputKind.ImagesDir;
+
         // output_file / output_path / out_path / dest_file ...
         if (hasOutputContext && (hasFileSuffix || hasPathSuffix))
             return OutputKind.OutputFile;
