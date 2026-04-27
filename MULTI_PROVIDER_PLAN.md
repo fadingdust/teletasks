@@ -39,57 +39,121 @@ After this step, `TelegramBotService.cs` no longer imports
 deleted, and `TelegramChatProvider` is the only thing that owns a
 `TelegramBotClient`.
 
-Touch list:
+The work splits into seven small commits. Each one builds clean,
+keeps the 292-test suite green, and is reviewable on its own. Sends
+keep working through the host's own `_bot` field across steps 2b.1
+through 2b.6 — only step 2b.7 deletes it. That intermediate state is
+fine because `TelegramBotClient` is just an HTTP wrapper; multiple
+instances with the same token can post in parallel without
+conflicting. The long-poll receive consumer is the only thing that
+must be single-owner, and step 2b.1 hands that to the provider.
 
-1. `Program.cs` — register `TelegramChatProvider` as
-   `IChatProvider` (singleton) so DI can hand it to both
-   `TelegramBotService` and the future `JobNotifierService`.
-2. `Services/TelegramBotService.cs`:
-   - Constructor takes `IChatProvider` (or `IEnumerable<IChatProvider>`
-     — see step 2c) instead of constructing its own `TelegramBotClient`.
-   - `ExecuteAsync` calls `provider.StartAsync(stoppingToken)`,
-     subscribes to `provider.OnMessage`, awaits `stoppingToken`.
-   - Convert `OnMessageAsync(Message msg, UpdateType _)` to
-     `OnIncomingAsync(IncomingMessage msg)`. Inside, `chatId` becomes
-     `msg.Chat` (already a `ChatId`); user id reads from `msg.UserId`;
-     text from `msg.Text`. Allow-list check delegates to
-     `provider.IsAuthorized(msg)`.
-   - Replace each `bot.SendMessage(chatId, html, parseMode: Html, …)`
-     with `provider.SendHtmlAsync(chat, html, ct)`.
-     Plain-text (no `parseMode`) sites become `SendTextAsync`.
-   - Replace `bot.SendChatAction(chatId, Typing, …)` with
-     `provider.SendTypingAsync(chat, ct)`.
-   - Replace the two `bot.SendPhoto / SendDocument` sites at
-     `TelegramBotService.cs:944,951` with
-     `provider.SendImageAsync` / `provider.SendDocumentAsync`. Path +
-     caption are already the only inputs; `InputFileStream` wrangling
-     moves into the provider (it's already implemented there).
-   - Drop the `using ProviderChatId = …` alias and the
-     `using Telegram.Bot*` block.
-3. `Services/Chat/TelegramChatProvider.cs` — minor surface tweaks
-   only if the rewire reveals gaps:
-   - Confirm `OnMessage` raises for non-text messages too if any
-     existing handler expects them (current `TelegramBotService` only
-     reads `message.Text`, so likely a no-op).
-   - The startup health-check DM in `TelegramBotService` currently
-     uses `_options.AllowedUserIds[0]`. Switch to
-     `provider.DefaultRecipient` so non-Telegram providers can
-     supply their own primary recipient later.
+### 2b.1 — Receive moves to the provider
 
-Tests:
+Largest of the small steps (~60–100 lines). Touches the lifecycle.
 
-- Existing `JobTrackerTests` and `ConversationStateTrackerTests` keep
-  passing unchanged (they already speak `ChatId`).
-- New `TelegramChatProviderTests` with a fake `TelegramBotClient`
-  surface (or skip and rely on the rewire being exercised by the
-  end-to-end harness once it lands — no fake exists today).
-- A focused regression test for the slash-command-addressed-to-other-bot
-  case currently inside `TelegramBotService` moves to
-  `TelegramChatProviderTests` (the `TryStripBotMention` path already
-  lives in the provider).
+- `Program.cs` — register `TelegramChatProvider` as a singleton
+  bound to both `IChatProvider` and its concrete type.
+- `TelegramBotService` constructor takes `IChatProvider _provider`
+  alongside the existing `_bot`.
+- `ExecuteAsync`:
+  - Drop `await _bot.GetMe()`, `_bot.DropPendingUpdates()`,
+    `_bot.OnError += …`, `_bot.OnMessage += …`. The provider does all
+    of these in `StartAsync`.
+  - Add `await _provider.StartAsync(stoppingToken);`
+    `_provider.OnMessage += OnIncomingAsync;`.
+- New private `OnIncomingAsync(IncomingMessage msg)` wraps the
+  existing `OnMessageAsync` body. At entry, adapt to the old shape:
+  ```csharp
+  var chatId = long.Parse(msg.Chat.Id);
+  var userId = long.Parse(msg.UserId);
+  var text = msg.Text;
+  ```
+  Everything below stays as is — sends still go through `_bot`.
+- Delete the old `OnMessageAsync(Message, UpdateType)` and
+  `OnErrorAsync(Exception, HandleErrorSource)` methods.
 
-Done when: `grep -r "Telegram\\.Bot" src/TeleTasks/Services/` returns
-only `Services/Chat/TelegramChatProvider.cs`.
+After this commit: receive flows through the provider; sends
+unchanged.
+
+### 2b.2 — `SendChatAction` → `SendTypingAsync`
+
+One site (`TelegramBotService.cs:370`). One-line edit. Trivial.
+
+### 2b.3 — `SendPhoto` / `SendDocument` → provider calls
+
+Two sites in the notifier loop (`TelegramBotService.cs:944,951`). The
+provider already takes `(path, caption)` directly — drop the
+`InputFileStream` plumbing at the call sites since
+`TelegramChatProvider` does it internally.
+
+### 2b.4 — `SendMessage` for slash-command handlers
+
+~20 sites: the `/help`, `/tasks`, `/reload`, `/whoami`, `/cancel`,
+`/jobs`, `/job N`, `/stop N`, `/dry`, `/results`, "unknown command",
+"not authorized" replies. Each is a mechanical
+`bot.SendMessage(chatId, …, parseMode: Html, …)` →
+`_provider.SendHtmlAsync(msg.Chat, …, ct)`. Plain-text (no
+`parseMode`) sites become `SendTextAsync`.
+
+### 2b.5 — `SendMessage` for matcher routing + conversational params
+
+~10 sites: the LLM-routing path, parameter-collection prompts,
+type-coercion error replies, "asking for next missing param".
+Same mechanical swap as 2b.4.
+
+### 2b.6 — `SendMessage` in the notifier loop + startup health check
+
+~8 remaining sites: per-job push notifications, completion summaries,
+the Ollama-startup-health DM. Health DM also switches from
+`_options.AllowedUserIds[0]` to `_provider.DefaultRecipient` so
+non-Telegram providers can supply their own primary recipient later.
+
+After this commit: zero `_bot.X` calls remain in
+`TelegramBotService.cs`.
+
+### 2b.7 — Remove the boundary scaffolding
+
+Pure cleanup. No behavior change.
+
+- Delete the `private TelegramBotClient? _bot;` field and its
+  construction in `ExecuteAsync`.
+- Delete the `private string? _botUsername;` field and the
+  `Telegram bot @{Username} started` log line (provider logs its own).
+- Drop all `using Telegram.Bot.*` from `TelegramBotService.cs`.
+- Drop the `using ProviderChatId = TeleTasks.Services.Chat.ChatId;`
+  alias — `Telegram.Bot.Types.ChatId` is no longer in scope, so the
+  bare name resolves cleanly.
+- Drop the `using Microsoft.Extensions.Options` import if
+  `_options` is now only used for `JobPollSeconds` (still needed
+  until step 2c moves the notifier).
+
+Done when: `grep -r "Telegram\\.Bot" src/TeleTasks/Services/`
+returns only `Services/Chat/TelegramChatProvider.cs`.
+
+### Notes on what's deliberately deferred
+
+- **No `IChatProvider.OnError` event.** The host's existing
+  `OnErrorAsync` only logs; the provider already logs equivalently in
+  `OnTelegramError`. Dropping the host subscription in 2b.1 loses no
+  real behavior. If a future step needs error visibility from the
+  host (e.g. retry/backoff coordination), add the interface event
+  then.
+- **No mention-stripping cleanup.** `_botUsername` is vestigial after
+  2b.1 because the provider strips `/cmd@MyBot` before raising
+  `OnMessage`. Field deletion happens in 2b.7 with the rest of the
+  scaffolding.
+- **No allow-list delegation.** The host's inline `IsAuthorized`
+  check stays unchanged through all of 2b. Switching to
+  `_provider.IsAuthorized(msg)` is a real behavior diff (default-deny
+  semantics, log-warning frequency) — it deserves its own commit
+  rather than riding inside one of the mechanical send-swaps.
+  Schedule it as 2b.8 if needed, or roll it into step 2d's
+  per-provider config rework.
+- **No new tests in 2b itself.** Suite stays at 292. The
+  `MessageRouter` extraction (step 2d) is the right place to add a
+  `FakeChatProvider` harness with routing-pipeline coverage; doing
+  it inside 2b just means rewriting the tests during 2d's refactor.
 
 ## Step 2c — Extract `JobNotifierService`
 
