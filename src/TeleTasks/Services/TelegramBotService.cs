@@ -307,7 +307,6 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task OnIncomingAsync(IncomingMessage message)
     {
-        var bot = _bot!;
         var ct = CancellationToken.None;
 
         var text = message.Text;
@@ -323,12 +322,13 @@ public sealed class TelegramBotService : BackgroundService
             _logger.LogWarning("Non-Telegram chat id {ChatId} routed to Telegram host; dropping.", message.Chat);
             return;
         }
+        var chat = message.Chat;
         var username = message.Username;
 
         if (!IsAuthorized(userId, chatId))
         {
             _logger.LogWarning("Unauthorized message from {User} ({UserId}) chat {ChatId}", username, userId, chatId);
-            await bot.SendMessage(chatId, "Not authorized.", cancellationToken: ct);
+            await _provider.SendTextAsync(chat, "Not authorized.", ct);
             return;
         }
 
@@ -341,7 +341,7 @@ public sealed class TelegramBotService : BackgroundService
             // a real slash command (in which case we cancel the conversation
             // and route the command). A user-typed path like /var/log/syslog
             // looks slash-command-shaped but is actually their answer.
-            var pending = _conversation.Get(ProviderChatId.FromTelegram(chatId));
+            var pending = _conversation.Get(chat);
             var isCommand = SlashCommand.IsCommand(text);
             if (pending is not null && !isCommand)
             {
@@ -350,10 +350,10 @@ public sealed class TelegramBotService : BackgroundService
             }
             if (isCommand && pending is not null)
             {
-                _conversation.Clear(ProviderChatId.FromTelegram(chatId));
-                await bot.SendMessage(chatId,
+                _conversation.Clear(chat);
+                await _provider.SendTextAsync(chat,
                     $"Cancelled the pending {pending.Task.Name}.",
-                    cancellationToken: ct);
+                    ct);
                 if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase)) return;
                 // Fall through so other slash commands still work.
             }
@@ -367,7 +367,7 @@ public sealed class TelegramBotService : BackgroundService
                 routedText = text.Length > 4 ? text[4..].TrimStart() : string.Empty;
                 if (string.IsNullOrWhiteSpace(routedText))
                 {
-                    await bot.SendMessage(chatId, "Usage: /dry <natural-language request>", cancellationToken: ct);
+                    await _provider.SendTextAsync(chat, "Usage: /dry <natural-language request>", ct);
                     return;
                 }
             }
@@ -377,7 +377,7 @@ public sealed class TelegramBotService : BackgroundService
                 return;
             }
 
-            await _provider.SendTypingAsync(ProviderChatId.FromTelegram(chatId), ct);
+            await _provider.SendTypingAsync(chat, ct);
 
             // Fast path: when the user types exactly a task name, skip the
             // LLM call entirely. Saves 20-30s on tiny models, avoids any
@@ -400,18 +400,18 @@ public sealed class TelegramBotService : BackgroundService
                 var reply = string.IsNullOrWhiteSpace(reason)
                     ? "I couldn't find a task that matches that. Try /tasks to see what I can do."
                     : $"No matching task: {reason}";
-                await bot.SendMessage(chatId, reply, cancellationToken: ct);
+                await _provider.SendTextAsync(chat, reply, ct);
                 return;
             }
 
             if (match.TaskName == TaskMatcher.ShowTasksRoute)
             {
-                await bot.SendMessage(chatId, BuildTaskList(), cancellationToken: ct);
+                await _provider.SendTextAsync(chat, BuildTaskList(), ct);
                 return;
             }
             if (match.TaskName == TaskMatcher.ShowHelpRoute)
             {
-                await bot.SendMessage(chatId, BuildHelp(), cancellationToken: ct);
+                await _provider.SendTextAsync(chat, BuildHelp(), ct);
                 return;
             }
             if (match.TaskName == TaskMatcher.ShowResultsRoute)
@@ -435,8 +435,7 @@ public sealed class TelegramBotService : BackgroundService
 
             if (dryRun)
             {
-                await bot.SendMessage(chatId, RenderDryRun(task, match.Parameters),
-                    parseMode: ParseMode.Html, cancellationToken: ct);
+                await _provider.SendHtmlAsync(chat, RenderDryRun(task, match.Parameters), ct);
                 return;
             }
 
@@ -445,19 +444,18 @@ public sealed class TelegramBotService : BackgroundService
                 .ToList();
             if (missingRequired.Count > 0)
             {
-                var state = _conversation.Begin(ProviderChatId.FromTelegram(chatId), task, match.Parameters, missingRequired);
-                await bot.SendMessage(chatId,
+                var state = _conversation.Begin(chat, task, match.Parameters, missingRequired);
+                await _provider.SendHtmlAsync(chat,
                     $"→ <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
                     "Send each one in turn, or /cancel to abort.",
-                    parseMode: ParseMode.Html, cancellationToken: ct);
+                    ct);
                 await PromptNextParameterAsync(chatId, state, ct);
                 return;
             }
 
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"→ Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(match.Parameters))}",
-                parseMode: ParseMode.Html,
-                cancellationToken: ct);
+                ct);
 
             var result = await _executor.ExecuteAsync(task, match.Parameters, ct);
             // Bind the originating chat to this job so the notifier loop knows
@@ -863,7 +861,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task PromptNextParameterAsync(long chatId, PendingTaskState state, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
         var p = state.Remaining.Peek();
 
         var sb = new StringBuilder();
@@ -877,34 +875,33 @@ public sealed class TelegramBotService : BackgroundService
         {
             sb.Append("\nChoices: <code>").Append(HtmlEscape(string.Join(", ", p.Enum))).Append("</code>");
         }
-        await bot.SendMessage(chatId, sb.ToString(),
-            parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
     }
 
     private async Task ContinueParameterCollectionAsync(long chatId, PendingTaskState state, string text, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
 
         if (state.Remaining.Count == 0)
         {
             // Defensive: shouldn't happen, but if it does, just clear and ignore.
-            _conversation.Clear(ProviderChatId.FromTelegram(chatId));
+            _conversation.Clear(chat);
             return;
         }
 
         var current = state.Remaining.Peek();
         if (!ParameterValueParser.TryParse(current, text, out var value, out var error))
         {
-            _conversation.Touch(ProviderChatId.FromTelegram(chatId));
-            await bot.SendMessage(chatId,
+            _conversation.Touch(chat);
+            await _provider.SendHtmlAsync(chat,
                 $"⚠️ {HtmlEscape(error ?? "Invalid value.")} Try again, or /cancel.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
         state.Remaining.Dequeue();
         state.Collected[current.Name] = value;
-        _conversation.Touch(ProviderChatId.FromTelegram(chatId));
+        _conversation.Touch(chat);
 
         if (state.Remaining.Count > 0)
         {
@@ -915,11 +912,11 @@ public sealed class TelegramBotService : BackgroundService
         // All required params collected — execute and clear.
         var task = state.Task;
         var collected = new Dictionary<string, object?>(state.Collected, StringComparer.OrdinalIgnoreCase);
-        _conversation.Clear(ProviderChatId.FromTelegram(chatId));
+        _conversation.Clear(chat);
 
-        await bot.SendMessage(chatId,
+        await _provider.SendHtmlAsync(chat,
             $"→ Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(collected))}",
-            parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            cancellationToken);
 
         var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
         await SendResultAsync(chatId, result, cancellationToken);
