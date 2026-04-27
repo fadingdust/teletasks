@@ -12,6 +12,7 @@ public sealed class TelegramBotService : BackgroundService
 {
     private readonly TelegramOptions _options;
     private readonly IChatProvider _provider;
+    private readonly ChatResultDispatcher _dispatcher;
     private readonly TaskRegistry _registry;
     private readonly TaskMatcher _matcher;
     private readonly TaskExecutor _executor;
@@ -24,6 +25,7 @@ public sealed class TelegramBotService : BackgroundService
     public TelegramBotService(
         IOptions<TelegramOptions> options,
         IChatProvider provider,
+        ChatResultDispatcher dispatcher,
         TaskRegistry registry,
         TaskMatcher matcher,
         TaskExecutor executor,
@@ -35,6 +37,7 @@ public sealed class TelegramBotService : BackgroundService
     {
         _options = options.Value;
         _provider = provider;
+        _dispatcher = dispatcher;
         _registry = registry;
         _matcher = matcher;
         _executor = executor;
@@ -185,7 +188,7 @@ public sealed class TelegramBotService : BackgroundService
         }
         try
         {
-            await SendResultAsync(chatId, bundle, ct);
+            await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), bundle, ct);
             _jobs.RecordSeenArtifacts(job.Id,
                 fresh.Where(a => !string.IsNullOrEmpty(a.Path)).Select(a => a.Path!));
             _logger.LogInformation("Pushed {Count} new artifact(s) for job {Id}.", fresh.Count, job.Id);
@@ -447,7 +450,7 @@ public sealed class TelegramBotService : BackgroundService
             {
                 _jobs.AssignChat(newJobId, ChatId.FromTelegram(chatId));
             }
-            await SendResultAsync(chatId, result, ct);
+            await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), result, ct);
         }
         catch (Exception ex)
         {
@@ -567,7 +570,7 @@ public sealed class TelegramBotService : BackgroundService
             return;
         }
 
-        await SendResultAsync(chatId, result, cancellationToken);
+        await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), result, cancellationToken);
     }
 
     private async Task HandleJobCommandAsync(long chatId, string text, CancellationToken cancellationToken)
@@ -734,7 +737,7 @@ public sealed class TelegramBotService : BackgroundService
                 {
                     var freshResult = new TaskExecutionResult { Success = result.Success, ExitCode = result.ExitCode };
                     foreach (var a in fresh) freshResult.Artifacts.Add(a);
-                    await SendResultAsync(chatId, freshResult, cancellationToken);
+                    await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), freshResult, cancellationToken);
                 }
                 else if (job.IsFinished)
                 {
@@ -895,44 +898,7 @@ public sealed class TelegramBotService : BackgroundService
             cancellationToken);
 
         var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
-        await SendResultAsync(chatId, result, cancellationToken);
-    }
-
-    private async Task SendResultAsync(long chatId, TaskExecutionResult result, CancellationToken cancellationToken)
-    {
-        var chat = ChatId.FromTelegram(chatId);
-
-        if (result.Artifacts.Count == 0 && !result.Success)
-        {
-            await _provider.SendTextAsync(chat, result.ErrorMessage ?? "Task failed.", cancellationToken);
-            return;
-        }
-
-        foreach (var artifact in result.Artifacts)
-        {
-            switch (artifact.Kind)
-            {
-                case "text":
-                    var rawText = artifact.Text ?? string.Empty;
-                    if (string.IsNullOrEmpty(rawText)) rawText = "(empty)";
-                    var body = string.IsNullOrWhiteSpace(artifact.Caption)
-                        ? $"<pre>{HtmlEscape(rawText)}</pre>"
-                        : $"<b>{HtmlEscape(artifact.Caption)}</b>\n<pre>{HtmlEscape(rawText)}</pre>";
-                    await _provider.SendHtmlAsync(chat, body, cancellationToken);
-                    break;
-                case "image":
-                    await _provider.SendImageAsync(chat, artifact.Path!, artifact.Caption, cancellationToken);
-                    break;
-                case "file":
-                    await _provider.SendDocumentAsync(chat, artifact.Path!, artifact.Caption, cancellationToken);
-                    break;
-            }
-        }
-
-        if (!result.Success && !string.IsNullOrWhiteSpace(result.ErrorMessage))
-        {
-            await _provider.SendTextAsync(chat, $"⚠️ {result.ErrorMessage}", cancellationToken);
-        }
+        await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), result, cancellationToken);
     }
 
     private bool IsAuthorized(long userId, long chatId)

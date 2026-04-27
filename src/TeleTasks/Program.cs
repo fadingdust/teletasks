@@ -98,6 +98,7 @@ builder.Services.AddHttpClient(OllamaClient.HttpClientName);
 
 builder.Services.AddSingleton<TelegramChatProvider>();
 builder.Services.AddSingleton<IChatProvider>(sp => sp.GetRequiredService<TelegramChatProvider>());
+builder.Services.AddSingleton<ChatResultDispatcher>();
 
 builder.Services.AddHostedService<TelegramBotService>();
 
