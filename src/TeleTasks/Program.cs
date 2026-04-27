@@ -101,6 +101,7 @@ builder.Services.AddSingleton<IChatProvider>(sp => sp.GetRequiredService<Telegra
 builder.Services.AddSingleton<ChatResultDispatcher>();
 
 builder.Services.AddHostedService<TelegramBotService>();
+builder.Services.AddHostedService<JobNotifierService>();
 
 builder.Logging.AddSimpleConsole(options =>
 {
