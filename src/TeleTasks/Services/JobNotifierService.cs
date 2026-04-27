@@ -29,7 +29,7 @@ namespace TeleTasks.Services;
 /// </summary>
 public sealed class JobNotifierService : BackgroundService
 {
-    private readonly TelegramOptions _options;
+    private readonly ChatOptions _options;
     private readonly JobTracker _jobs;
     private readonly TaskExecutor _executor;
     private readonly ChatResultDispatcher _dispatcher;
@@ -38,7 +38,7 @@ public sealed class JobNotifierService : BackgroundService
     private readonly ILogger<JobNotifierService> _logger;
 
     public JobNotifierService(
-        IOptions<TelegramOptions> options,
+        IOptions<ChatOptions> options,
         IEnumerable<IChatProvider> providers,
         JobTracker jobs,
         TaskExecutor executor,
@@ -58,7 +58,7 @@ public sealed class JobNotifierService : BackgroundService
         var pollSeconds = _options.JobPollSeconds;
         if (pollSeconds <= 0)
         {
-            _logger.LogInformation("Job poll disabled (Telegram:JobPollSeconds <= 0). Sleeping forever.");
+            _logger.LogInformation("Job poll disabled (Chat:JobPollSeconds <= 0). Sleeping forever.");
             await Task.Delay(Timeout.Infinite, stoppingToken);
             return;
         }

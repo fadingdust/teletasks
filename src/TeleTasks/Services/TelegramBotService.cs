@@ -11,6 +11,7 @@ namespace TeleTasks.Services;
 public sealed class TelegramBotService : BackgroundService
 {
     private readonly TelegramOptions _options;
+    private readonly ChatOptions _chatOptions;
     private readonly IChatProvider _provider;
     private readonly ChatResultDispatcher _dispatcher;
     private readonly TaskRegistry _registry;
@@ -24,6 +25,7 @@ public sealed class TelegramBotService : BackgroundService
 
     public TelegramBotService(
         IOptions<TelegramOptions> options,
+        IOptions<ChatOptions> chatOptions,
         IChatProvider provider,
         ChatResultDispatcher dispatcher,
         TaskRegistry registry,
@@ -36,6 +38,7 @@ public sealed class TelegramBotService : BackgroundService
         ILogger<TelegramBotService> logger)
     {
         _options = options.Value;
+        _chatOptions = chatOptions.Value;
         _provider = provider;
         _dispatcher = dispatcher;
         _registry = registry;
@@ -121,7 +124,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendStartupNotificationAsync(string htmlBody, CancellationToken cancellationToken)
     {
-        if (!_options.StartupNotificationsEnabled) return;
+        if (!_chatOptions.StartupNotificationsEnabled) return;
 
         // Provider.DefaultRecipient picks the first allow-listed user/chat in
         // a Telegram-shaped allow-list today, but the abstraction lets a future

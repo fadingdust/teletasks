@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TeleTasks.Cli;
 using TeleTasks.Configuration;
 using TeleTasks.Services;
@@ -86,6 +87,8 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
 builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection(OllamaOptions.SectionName));
 builder.Services.Configure<TaskCatalogOptions>(builder.Configuration.GetSection(TaskCatalogOptions.SectionName));
+builder.Services.Configure<ChatOptions>(builder.Configuration.GetSection(ChatOptions.SectionName));
+builder.Services.AddSingleton<IConfigureOptions<ChatOptions>, ChatOptionsDefaults>();
 
 builder.Services.AddSingleton<TaskRegistry>();
 builder.Services.AddSingleton<OutputCollector>();
