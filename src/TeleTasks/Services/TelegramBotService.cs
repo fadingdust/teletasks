@@ -377,7 +377,7 @@ public sealed class TelegramBotService : BackgroundService
                 return;
             }
 
-            await bot.SendChatAction(chatId, ChatAction.Typing, cancellationToken: ct);
+            await _provider.SendTypingAsync(ProviderChatId.FromTelegram(chatId), ct);
 
             // Fast path: when the user types exactly a task name, skip the
             // LLM call entirely. Saves 20-30s on tiny models, avoids any
