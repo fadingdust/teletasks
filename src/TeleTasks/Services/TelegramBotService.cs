@@ -214,7 +214,6 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task PushCompletionAsync(long chatId, JobRecord job, CancellationToken ct)
     {
-        var bot = _bot!;
         var summary = new StringBuilder();
         summary.Append("✅ Job ").Append(job.Id).Append(" <code>")
                .Append(HtmlEscape(job.TaskName)).Append("</code> ")
@@ -222,7 +221,7 @@ public sealed class TelegramBotService : BackgroundService
                .Append(" after ").Append(HtmlEscape(FormatElapsed(job.Elapsed))).Append('.');
         try
         {
-            await bot.SendMessage(chatId, summary.ToString(), parseMode: ParseMode.Html, cancellationToken: ct);
+            await _provider.SendHtmlAsync(ProviderChatId.FromTelegram(chatId), summary.ToString(), ct);
             _jobs.MarkCompletionNotified(job.Id);
             _logger.LogInformation("Pushed completion summary for job {Id}.", job.Id);
         }
@@ -284,20 +283,20 @@ public sealed class TelegramBotService : BackgroundService
     {
         if (!_options.StartupNotificationsEnabled) return;
 
-        long? recipient = null;
-        if (_options.AllowedUserIds.Length > 0) recipient = _options.AllowedUserIds[0];
-        else if (_options.AllowedChatIds.Length > 0) recipient = _options.AllowedChatIds[0];
-
+        // Provider.DefaultRecipient picks the first allow-listed user/chat in
+        // a Telegram-shaped allow-list today, but the abstraction lets a future
+        // Discord provider supply its own primary recipient (typically the
+        // first AllowedUserId for DM-only deployments).
+        var recipient = _provider.DefaultRecipient;
         if (recipient is null)
         {
-            _logger.LogWarning("Startup notification not sent: no AllowedUserIds or AllowedChatIds configured.");
+            _logger.LogWarning("Startup notification not sent: provider has no default recipient.");
             return;
         }
 
         try
         {
-            await _bot!.SendMessage(recipient.Value, htmlBody,
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            await _provider.SendHtmlAsync(recipient.Value, htmlBody, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -924,11 +923,11 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendResultAsync(long chatId, TaskExecutionResult result, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
 
         if (result.Artifacts.Count == 0 && !result.Success)
         {
-            await bot.SendMessage(chatId, result.ErrorMessage ?? "Task failed.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, result.ErrorMessage ?? "Task failed.", cancellationToken);
             return;
         }
 
@@ -942,28 +941,20 @@ public sealed class TelegramBotService : BackgroundService
                     var body = string.IsNullOrWhiteSpace(artifact.Caption)
                         ? $"<pre>{HtmlEscape(rawText)}</pre>"
                         : $"<b>{HtmlEscape(artifact.Caption)}</b>\n<pre>{HtmlEscape(rawText)}</pre>";
-                    await bot.SendMessage(chatId, body, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                    await _provider.SendHtmlAsync(chat, body, cancellationToken);
                     break;
                 case "image":
-                    await _provider.SendImageAsync(
-                        ProviderChatId.FromTelegram(chatId),
-                        artifact.Path!,
-                        artifact.Caption,
-                        cancellationToken);
+                    await _provider.SendImageAsync(chat, artifact.Path!, artifact.Caption, cancellationToken);
                     break;
                 case "file":
-                    await _provider.SendDocumentAsync(
-                        ProviderChatId.FromTelegram(chatId),
-                        artifact.Path!,
-                        artifact.Caption,
-                        cancellationToken);
+                    await _provider.SendDocumentAsync(chat, artifact.Path!, artifact.Caption, cancellationToken);
                     break;
             }
         }
 
         if (!result.Success && !string.IsNullOrWhiteSpace(result.ErrorMessage))
         {
-            await bot.SendMessage(chatId, $"⚠️ {result.ErrorMessage}", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, $"⚠️ {result.ErrorMessage}", cancellationToken);
         }
     }
 
@@ -1032,7 +1023,7 @@ public sealed class TelegramBotService : BackgroundService
     {
         try
         {
-            await _bot!.SendMessage(chatId, text, cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(ProviderChatId.FromTelegram(chatId), text, cancellationToken);
         }
         catch (Exception ex)
         {
