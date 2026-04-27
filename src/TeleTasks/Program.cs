@@ -89,6 +89,8 @@ builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection(Ollam
 builder.Services.Configure<TaskCatalogOptions>(builder.Configuration.GetSection(TaskCatalogOptions.SectionName));
 builder.Services.Configure<ChatOptions>(builder.Configuration.GetSection(ChatOptions.SectionName));
 builder.Services.AddSingleton<IConfigureOptions<ChatOptions>, ChatOptionsDefaults>();
+builder.Services.Configure<TelegramProviderOptions>(builder.Configuration.GetSection(TelegramProviderOptions.SectionName));
+builder.Services.AddSingleton<IConfigureOptions<TelegramProviderOptions>, TelegramProviderOptionsDefaults>();
 
 builder.Services.AddSingleton<TaskRegistry>();
 builder.Services.AddSingleton<OutputCollector>();

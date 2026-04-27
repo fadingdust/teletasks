@@ -26,14 +26,14 @@ public sealed class TelegramChatProvider : IChatProvider
 {
     public const string ProviderName = "telegram";
 
-    private readonly TelegramOptions _options;
+    private readonly TelegramProviderOptions _options;
     private readonly ILogger<TelegramChatProvider> _logger;
 
     private TelegramBotClient? _bot;
     private string? _botUsername;
 
     public TelegramChatProvider(
-        IOptions<TelegramOptions> options,
+        IOptions<TelegramProviderOptions> options,
         ILogger<TelegramChatProvider> logger)
     {
         _options = options.Value;
@@ -62,7 +62,7 @@ public sealed class TelegramChatProvider : IChatProvider
     {
         if (string.IsNullOrWhiteSpace(_options.Token))
         {
-            _logger.LogError("Telegram:Token not configured. Provider will not start.");
+            _logger.LogError("Chat:Providers:Telegram:Token not configured. Provider will not start.");
             return;
         }
 
