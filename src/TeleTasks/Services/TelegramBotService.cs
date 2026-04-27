@@ -2,15 +2,9 @@ using System.Text;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Telegram.Bot;
-using Telegram.Bot.Types;
-using Telegram.Bot.Types.Enums;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
 using TeleTasks.Services.Chat;
-// Disambiguating alias: Telegram.Bot.Types also exports a type named ChatId,
-// so the local provider-qualified ChatId would otherwise be shadowed.
-using ProviderChatId = TeleTasks.Services.Chat.ChatId;
 
 namespace TeleTasks.Services;
 
@@ -26,11 +20,6 @@ public sealed class TelegramBotService : BackgroundService
     private readonly JobTracker _jobs;
     private readonly ConversationStateTracker _conversation;
     private readonly ILogger<TelegramBotService> _logger;
-
-    private TelegramBotClient? _bot;
-#pragma warning disable CS0649 // vestigial; provider strips @-mentions, dead reader removed in 2b.7
-    private string? _botUsername;
-#pragma warning restore CS0649
 
     public TelegramBotService(
         IOptions<TelegramOptions> options,
@@ -65,11 +54,6 @@ public sealed class TelegramBotService : BackgroundService
         }
 
         _registry.Load();
-        // Sends in 2b.2-2b.6 still go through this client; deletion belongs to 2b.7.
-        // A second TelegramBotClient on the same token is fine for HTTP send paths —
-        // long-poll receive is the only single-owner concern, and the provider owns it.
-        _bot = new TelegramBotClient(_options.Token, cancellationToken: stoppingToken);
-
         await _provider.StartAsync(stoppingToken);
         _provider.OnMessage += OnIncomingAsync;
         _logger.LogInformation("Loaded {Tasks} task(s).", _registry.Tasks.Count);
@@ -221,7 +205,7 @@ public sealed class TelegramBotService : BackgroundService
                .Append(" after ").Append(HtmlEscape(FormatElapsed(job.Elapsed))).Append('.');
         try
         {
-            await _provider.SendHtmlAsync(ProviderChatId.FromTelegram(chatId), summary.ToString(), ct);
+            await _provider.SendHtmlAsync(ChatId.FromTelegram(chatId), summary.ToString(), ct);
             _jobs.MarkCompletionNotified(job.Id);
             _logger.LogInformation("Pushed completion summary for job {Id}.", job.Id);
         }
@@ -461,7 +445,7 @@ public sealed class TelegramBotService : BackgroundService
             // where to push new artifacts and the completion summary.
             if (result.JobId is int newJobId)
             {
-                _jobs.AssignChat(newJobId, ProviderChatId.FromTelegram(chatId));
+                _jobs.AssignChat(newJobId, ChatId.FromTelegram(chatId));
             }
             await SendResultAsync(chatId, result, ct);
         }
@@ -474,18 +458,11 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task HandleCommandAsync(long chatId, string text, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
         var space = text.IndexOf(' ');
         var head = space < 0 ? text : text[..space];
-        var at = head.IndexOf('@');
-        if (at > 0)
-        {
-            if (!head[(at + 1)..].Equals(_botUsername, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-            head = head[..at];
-        }
+        // @MyBot mention stripping happens upstream in TelegramChatProvider
+        // before OnMessage fires, so head never contains '@' here.
 
         switch (head.ToLowerInvariant())
         {
@@ -538,7 +515,7 @@ public sealed class TelegramBotService : BackgroundService
     /// </summary>
     private async Task SendResultsAsync(long chatId, string? requestedName, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
 
         if (string.IsNullOrWhiteSpace(requestedName))
         {
@@ -606,7 +583,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task HandleStopCommandAsync(long chatId, string text, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
         {
@@ -636,7 +613,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendJobsListAsync(long chatId, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
         _jobs.Refresh();
         var jobs = _jobs.List();
         if (jobs.Count == 0)
@@ -674,7 +651,7 @@ public sealed class TelegramBotService : BackgroundService
             }
         }
 
-        await _provider.SendHtmlAsync(ProviderChatId.FromTelegram(chatId), sb.ToString(), cancellationToken);
+        await _provider.SendHtmlAsync(ChatId.FromTelegram(chatId), sb.ToString(), cancellationToken);
     }
 
     private async Task SendLatestJobStatusAsync(long chatId, CancellationToken cancellationToken)
@@ -686,7 +663,7 @@ public sealed class TelegramBotService : BackgroundService
             .FirstOrDefault();
         if (latest is null)
         {
-            await _provider.SendTextAsync(ProviderChatId.FromTelegram(chatId), "No jobs yet.", cancellationToken);
+            await _provider.SendTextAsync(ChatId.FromTelegram(chatId), "No jobs yet.", cancellationToken);
             return;
         }
         await SendJobStatusAsync(chatId, latest.Id, cancellationToken);
@@ -694,7 +671,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendJobStatusAsync(long chatId, int id, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
         _jobs.Refresh();
         var job = _jobs.Get(id);
         if (job is null)
@@ -860,7 +837,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task PromptNextParameterAsync(long chatId, PendingTaskState state, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
         var p = state.Remaining.Peek();
 
         var sb = new StringBuilder();
@@ -879,7 +856,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task ContinueParameterCollectionAsync(long chatId, PendingTaskState state, string text, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
 
         if (state.Remaining.Count == 0)
         {
@@ -923,7 +900,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendResultAsync(long chatId, TaskExecutionResult result, CancellationToken cancellationToken)
     {
-        var chat = ProviderChatId.FromTelegram(chatId);
+        var chat = ChatId.FromTelegram(chatId);
 
         if (result.Artifacts.Count == 0 && !result.Success)
         {
@@ -1023,7 +1000,7 @@ public sealed class TelegramBotService : BackgroundService
     {
         try
         {
-            await _provider.SendTextAsync(ProviderChatId.FromTelegram(chatId), text, cancellationToken);
+            await _provider.SendTextAsync(ChatId.FromTelegram(chatId), text, cancellationToken);
         }
         catch (Exception ex)
         {
