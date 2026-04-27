@@ -949,19 +949,19 @@ public sealed class TelegramBotService : BackgroundService
                     await bot.SendMessage(chatId, body, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
                     break;
                 case "image":
-                    {
-                        await using var fs = File.OpenRead(artifact.Path!);
-                        var input = new Telegram.Bot.Types.InputFileStream(fs, Path.GetFileName(artifact.Path!));
-                        await bot.SendPhoto(chatId, input, caption: artifact.Caption, cancellationToken: cancellationToken);
-                        break;
-                    }
+                    await _provider.SendImageAsync(
+                        ProviderChatId.FromTelegram(chatId),
+                        artifact.Path!,
+                        artifact.Caption,
+                        cancellationToken);
+                    break;
                 case "file":
-                    {
-                        await using var fs = File.OpenRead(artifact.Path!);
-                        var input = new Telegram.Bot.Types.InputFileStream(fs, Path.GetFileName(artifact.Path!));
-                        await bot.SendDocument(chatId, input, caption: artifact.Caption, cancellationToken: cancellationToken);
-                        break;
-                    }
+                    await _provider.SendDocumentAsync(
+                        ProviderChatId.FromTelegram(chatId),
+                        artifact.Path!,
+                        artifact.Caption,
+                        cancellationToken);
+                    break;
             }
         }
 
