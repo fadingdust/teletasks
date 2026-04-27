@@ -10,7 +10,6 @@ namespace TeleTasks.Services;
 
 public sealed class TelegramBotService : BackgroundService
 {
-    private readonly TelegramOptions _options;
     private readonly ChatOptions _chatOptions;
     private readonly IChatProvider _provider;
     private readonly ChatResultDispatcher _dispatcher;
@@ -24,7 +23,6 @@ public sealed class TelegramBotService : BackgroundService
     private readonly ILogger<TelegramBotService> _logger;
 
     public TelegramBotService(
-        IOptions<TelegramOptions> options,
         IOptions<ChatOptions> chatOptions,
         IChatProvider provider,
         ChatResultDispatcher dispatcher,
@@ -37,7 +35,6 @@ public sealed class TelegramBotService : BackgroundService
         ConversationStateTracker conversation,
         ILogger<TelegramBotService> logger)
     {
-        _options = options.Value;
         _chatOptions = chatOptions.Value;
         _provider = provider;
         _dispatcher = dispatcher;
@@ -53,12 +50,9 @@ public sealed class TelegramBotService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.Token))
-        {
-            _logger.LogError("Telegram:Token not configured. Bot will not start.");
-            return;
-        }
-
+        // Provider's StartAsync logs-and-returns when its token isn't set,
+        // so a missing-config deployment surfaces the error there instead
+        // of a host-side early-exit.
         _registry.Load();
         await _provider.StartAsync(stoppingToken);
         _provider.OnMessage += OnIncomingAsync;
@@ -154,10 +148,10 @@ public sealed class TelegramBotService : BackgroundService
         var text = message.Text;
         if (string.IsNullOrEmpty(text)) return;
 
-        // Provider hands us provider-native ids as strings; adapt back to longs
-        // so the existing handler body stays untouched. The 2d.3 allow-list-
-        // delegation step deletes this adapter when the host stops caring about
-        // the underlying id type.
+        // The provider does the allow-list check now, but the handler body
+        // below still uses long chatIds (slash-command dispatch, JobTracker
+        // wiring, etc). Adapt at the boundary; the 2d.4 MessageRouter
+        // extraction can drop the adapter once routing fully speaks ChatId.
         if (!long.TryParse(message.UserId, out var userId)) userId = 0;
         if (!long.TryParse(message.Chat.Id, out var chatId))
         {
@@ -167,7 +161,7 @@ public sealed class TelegramBotService : BackgroundService
         var chat = message.Chat;
         var username = message.Username;
 
-        if (!IsAuthorized(userId, chatId))
+        if (!_provider.IsAuthorized(message))
         {
             _logger.LogWarning("Unauthorized message from {User} ({UserId}) chat {ChatId}", username, userId, chatId);
             await _provider.SendTextAsync(chat, "Not authorized.", ct);
@@ -755,18 +749,6 @@ public sealed class TelegramBotService : BackgroundService
 
         var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
         await _dispatcher.DispatchAsync(_provider, ChatId.FromTelegram(chatId), result, cancellationToken);
-    }
-
-    private bool IsAuthorized(long userId, long chatId)
-    {
-        var hasAllowList = _options.AllowedUserIds.Length > 0 || _options.AllowedChatIds.Length > 0;
-        if (!hasAllowList)
-        {
-            _logger.LogWarning("No Telegram allow-list configured; rejecting message from {UserId}.", userId);
-            return false;
-        }
-        return _options.AllowedUserIds.Contains(userId)
-            || _options.AllowedChatIds.Contains(chatId);
     }
 
     private static string FormatParameterList(IReadOnlyDictionary<string, object?> parameters)
