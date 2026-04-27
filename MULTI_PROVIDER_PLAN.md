@@ -284,41 +284,191 @@ unblocked because the loop iterates `IEnumerable<IChatProvider>`.
 
 ## Step 2d — Per-provider config + rename `TelegramBotService` → `ChatHost`
 
-Goal: tidy the boundary so phase 3 (Discord) is a drop-in.
+Goal: tidy the boundary so phase 3 (Discord) is a drop-in. Target shape
+for `appsettings.json`:
 
-1. New `ChatOptions` section:
-   ```jsonc
-   "Chat": {
-     "JobPollSeconds": 30,
-     "StartupNotificationsEnabled": true,
-     "Providers": {
-       "Telegram": {
-         "Token": "...",
-         "AllowedUserIds": [],
-         "AllowedChatIds": []
-       }
-     }
-   }
-   ```
-   `TelegramOptions` keeps reading the legacy `Telegram:*` path for
-   one release; the bot logs a deprecation hint at startup if the
-   legacy path is the one that supplied the value.
-2. Rename `Services/TelegramBotService.cs` → `Services/ChatHost.cs`.
-   It owns the `IChatProvider` lifecycle and the `OnMessage` →
-   `MessageRouter` dispatch; nothing inside is Telegram-shaped any more.
-3. Move the message-routing logic (slash commands + matcher dispatch +
-   conversational params) into a new `Services/MessageRouter.cs` so
-   `ChatHost` is just a hosted-service wrapper. This is the seam the
-   intents work (IDEAS.md) plugs into later.
+```jsonc
+"Chat": {
+  "JobPollSeconds": 30,
+  "StartupNotificationsEnabled": true,
+  "Providers": {
+    "Telegram": {
+      "Token": "...",
+      "AllowedUserIds": [],
+      "AllowedChatIds": []
+    }
+  }
+}
+```
 
-Tests:
+The legacy `Telegram:*` path keeps working for one release; the bot
+logs a deprecation hint at startup if it's the source of any value.
 
-- A `MessageRouterTests` rig with a fake provider that captures every
-  `Send*Async` call. Re-targets the existing slash-command coverage
-  at this seam instead of `TelegramBotService` internals.
-- Config-migration test: load a sample `appsettings.json` with the
-  legacy `Telegram:*` shape, assert resolved options match the new
-  `Chat:Providers:Telegram:*` shape and a deprecation log fires once.
+Six small commits. Same shape as 2b and 2c: incremental, each
+buildable + green on its own. The big move (MessageRouter
+extraction) is mechanical because the routing methods are already
+self-contained after 2b/2c.
+
+### 2d.1 — `ChatOptions` for cross-provider settings
+
+Smallest of the config commits. Just the two non-provider-specific
+fields (`JobPollSeconds`, `StartupNotificationsEnabled`) — the
+per-provider section comes next.
+
+- New `Configuration/ChatOptions.cs` POCO with the two fields and
+  default values matching today's `TelegramOptions` defaults
+  (`JobPollSeconds=30`, `StartupNotificationsEnabled=true`).
+- `Program.cs` binds `Chat:` to `ChatOptions`.
+- New `Configuration/ChatOptionsDefaults.cs : IConfigureOptions<ChatOptions>`
+  reads `IOptions<TelegramOptions>` and fills in `ChatOptions` from
+  `TelegramOptions` whenever the `Chat:` value is the default sentinel
+  (i.e. the user didn't set it). Logs a one-shot deprecation hint
+  per field when the legacy key was the source.
+- Switch consumers:
+  - `JobNotifierService` (from 2c) reads `IOptions<ChatOptions>.JobPollSeconds`.
+  - `TelegramBotService.SendStartupNotificationAsync` reads
+    `IOptions<ChatOptions>.StartupNotificationsEnabled`.
+- `TelegramOptions.JobPollSeconds` and
+  `TelegramOptions.StartupNotificationsEnabled` stay on the POCO so
+  the legacy-fallback binder can read them; nobody else does.
+
+### 2d.2 — `Chat:Providers:Telegram:*` for per-provider config
+
+Parallel structure to 2d.1 but for the provider-shaped fields.
+
+- New `Configuration/TelegramProviderOptions.cs` POCO:
+  `Token`, `AllowedUserIds`, `AllowedChatIds`.
+- `Program.cs` binds `Chat:Providers:Telegram:` to
+  `TelegramProviderOptions`.
+- `IConfigureOptions<TelegramProviderOptions>` falls back to the
+  matching fields on `TelegramOptions` when `Chat:Providers:Telegram:*`
+  isn't set; same one-shot deprecation hint pattern.
+- `TelegramChatProvider` switches its constructor from
+  `IOptions<TelegramOptions>` to `IOptions<TelegramProviderOptions>`.
+- `TelegramBotService.IsAuthorized` (host's inline check, still
+  present until 2d.3) keeps reading `IOptions<TelegramOptions>` —
+  changing it now would tangle with the delegation step.
+
+### 2d.3 — Allow-list delegation
+
+Tiny commit. Removes the host's duplicate of the allow-list check.
+
+- `TelegramBotService.OnIncomingAsync`: replace
+  `if (!IsAuthorized(userId, chatId))` with
+  `if (!_provider.IsAuthorized(msg))`.
+- Delete the host's private `IsAuthorized(long, long)` method.
+- `TelegramOptions` no longer has any direct readers (only the
+  legacy-fallback binders touch it via `IOptions<TelegramOptions>`).
+
+Behavior diff is genuinely zero — both implementations have
+identical logic (default-deny when allow-list empty + per-message
+warning, allow-list match by user id or chat id). Verified by
+diffing the two methods during the commit.
+
+### 2d.4 — Extract `MessageRouter`
+
+The big move, but mechanical because the routing methods are
+already self-contained after 2b (everything talks to `_provider`,
+not `_bot`). Roughly 700 lines lift from `TelegramBotService.cs` to
+a new file.
+
+- New `Services/MessageRouter.cs` taking
+  `IChatProvider provider`, `TaskRegistry registry`,
+  `TaskMatcher matcher`, `TaskExecutor executor`,
+  `OllamaClient ollama`, `ChatResultDispatcher dispatcher`,
+  `JobTracker jobs`, `ConversationStateTracker conversation`,
+  `ILogger<MessageRouter> logger`.
+- Move the methods: `OnIncomingAsync`, `RouteCommandAsync` and all
+  the per-command helpers (`SendJobsListAsync`,
+  `SendLatestJobStatusAsync`, `SendJobStatusAsync`,
+  `SendResultsAsync`, `ContinueParameterCollectionAsync`,
+  `RenderDryRun`, `BuildHelp`, `BuildTaskList`, `FormatJobExit`,
+  `FormatElapsed`, `HtmlEscape`, `TrySendAsync`).
+- `TelegramBotService` shrinks to lifecycle:
+  - Constructor takes `IChatProvider provider`, `MessageRouter router`,
+    `IOptions<ChatOptions> chatOptions`, `OllamaClient ollama`,
+    `ILogger<TelegramBotService> logger`.
+  - `ExecuteAsync`: `await provider.StartAsync(ct);
+    provider.OnMessage += router.HandleAsync;
+    await CheckOllamaHealthAndNotifyAsync(ct);
+    await Task.Delay(Timeout.Infinite, ct);`
+  - Keeps `CheckOllamaHealthAndNotifyAsync` and
+    `SendStartupNotificationAsync` — those are lifecycle, not
+    routing.
+- DI: register `MessageRouter` as singleton.
+
+Behavior identical. Because the router takes a single
+`IChatProvider`, multi-provider routing is still a step-3 concern —
+this commit just creates the seam.
+
+### 2d.5 — `MessageRouterTests` with `FakeChatProvider`
+
+Adds the regression net that's been missing since the start.
+
+- New `tests/TeleTasks.Tests/FakeChatProvider.cs` implementing
+  `IChatProvider`: captures every `SendTextAsync`, `SendHtmlAsync`,
+  `SendImageAsync`, `SendDocumentAsync`, `SendTypingAsync` call into
+  in-memory lists; raises `OnMessage` programmatically via a
+  `RaiseAsync(IncomingMessage)` helper.
+- New `tests/TeleTasks.Tests/MessageRouterTests.cs` covering the
+  paths most likely to regress during refactoring:
+  - Slash commands round-trip: `/help`, `/tasks`, `/whoami`,
+    `/cancel`, `/jobs`, `/job N`, `/stop N`, `/dry`, `/results`,
+    `/reload`. Each asserts the right `Send*Async` was called with
+    a substring of the expected response.
+  - Authorization: unauthorized message → `SendTextAsync("Not authorized.")`
+    and no further state mutation.
+  - Conversational params: matcher returns task with missing
+    required string → `Begin` lands in tracker, next user message
+    becomes the value, second message starts the run.
+  - Slash command during pending collection clears state.
+  - Exact-task-name fast path: typing a task name skips the matcher
+    (no `OllamaClient` call) and goes straight to param collection.
+- Suite grows ~10–15 tests.
+
+### 2d.6 — Rename `TelegramBotService` → `ChatHost`
+
+Pure rename. After 2d.4 the class no longer mentions Telegram inside
+its body, so the name change just makes the file name match what's
+in it.
+
+- `git mv src/TeleTasks/Services/TelegramBotService.cs src/TeleTasks/Services/ChatHost.cs`.
+- Class name `TelegramBotService` → `ChatHost`.
+- Update DI registration in `Program.cs`.
+- Update logger generic param `ILogger<TelegramBotService>` →
+  `ILogger<ChatHost>`.
+- Update the test in `tests/` if any reference the type name (none
+  today — message-routing tests added in 2d.5 target `MessageRouter`).
+
+Build green. Suite green. After this, `grep -ri "TelegramBotService"
+src/ tests/` returns nothing.
+
+### Notes on what 2d deliberately defers
+
+- **Removing `TelegramOptions` entirely.** Stays through one
+  release as the source of legacy-fallback values. After step 3
+  (Discord) lands and the deprecation period closes, a follow-up
+  commit can delete `TelegramOptions.cs` and the
+  `IConfigureOptions<*Defaults>` binders. Schedule the removal as a
+  reminder in `IDEAS.md` rather than a blocker here.
+- **Multi-provider router routing.** `MessageRouter` takes one
+  `IChatProvider` after 2d.4. With Discord (step 3), DI registers
+  one router per provider — each provider's `OnMessage` subscribes
+  its own router instance, scoped by constructor. The alternative
+  (one router taking `IEnumerable<IChatProvider>` and dispatching by
+  `IncomingMessage.Chat.Provider`) is a small refactor that lands
+  with step 3 if needed; today's design is the minimum that ships.
+- **Config-migration integration test.** A test that loads a sample
+  legacy-shape `appsettings.json` and asserts the deprecation log
+  fires once is genuinely useful, but `IConfiguration` + custom
+  `IConfigureOptions` setup is fiddly to mock. Defer until after
+  step 3, when the multi-provider config story has settled and the
+  test exercises the full bind path including Discord.
+- **HTML escaping for non-Telegram providers.** `MessageRouter`
+  emits Telegram-flavoured HTML (`<b>`, `<i>`, `<code>`, `<pre>`).
+  Discord (step 3) brings the `HtmlToDiscordMarkdown` translator
+  with its own test corpus; doing the translator in 2d would mean
+  building it without a consumer.
 
 ## Step 3 — Discord provider
 
