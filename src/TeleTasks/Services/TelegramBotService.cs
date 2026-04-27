@@ -477,7 +477,7 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task HandleCommandAsync(long chatId, string text, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
         var space = text.IndexOf(' ');
         var head = space < 0 ? text : text[..space];
         var at = head.IndexOf('@');
@@ -494,17 +494,17 @@ public sealed class TelegramBotService : BackgroundService
         {
             case "/start":
             case "/help":
-                await bot.SendMessage(chatId, BuildHelp(), cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, BuildHelp(), cancellationToken);
                 break;
             case "/tasks":
-                await bot.SendMessage(chatId, BuildTaskList(), cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, BuildTaskList(), cancellationToken);
                 break;
             case "/reload":
                 _registry.Load();
-                await bot.SendMessage(chatId, $"Reloaded {_registry.Tasks.Count} task(s).", cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, $"Reloaded {_registry.Tasks.Count} task(s).", cancellationToken);
                 break;
             case "/whoami":
-                await bot.SendMessage(chatId, $"chat={chatId}", cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, $"chat={chatId}", cancellationToken);
                 break;
             case "/results":
                 {
@@ -522,13 +522,12 @@ public sealed class TelegramBotService : BackgroundService
                 await HandleStopCommandAsync(chatId, text, cancellationToken);
                 break;
             case "/cancel":
-                // The OnMessageAsync entry path already cleared any pending state
+                // The OnIncomingAsync entry path already cleared any pending state
                 // when a slash command arrived; this branch just acknowledges.
-                await bot.SendMessage(chatId, "Nothing pending.",
-                    cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, "Nothing pending.", cancellationToken);
                 break;
             default:
-                await bot.SendMessage(chatId, "Unknown command. Try /help.", cancellationToken: cancellationToken);
+                await _provider.SendTextAsync(chat, "Unknown command. Try /help.", cancellationToken);
                 break;
         }
     }
@@ -542,13 +541,13 @@ public sealed class TelegramBotService : BackgroundService
     /// </summary>
     private async Task SendResultsAsync(long chatId, string? requestedName, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
 
         if (string.IsNullOrWhiteSpace(requestedName))
         {
-            await bot.SendMessage(chatId,
+            await _provider.SendTextAsync(chat,
                 "Usage: /results <task-name>. See /tasks for the list.",
-                cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
@@ -558,18 +557,18 @@ public sealed class TelegramBotService : BackgroundService
             var disabled = _registry.DisabledTasks.FirstOrDefault(t =>
                 string.Equals(t.Name, requestedName, StringComparison.OrdinalIgnoreCase));
             var hint = disabled is not null ? " (it's disabled — flip enabled:true to use)" : "";
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"No task named <code>{HtmlEscape(requestedName)}</code>{hint}.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
         if (task.Output.Type == TaskOutputType.Text)
         {
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"<code>{HtmlEscape(task.Name)}</code> has Text output (its stdout). " +
                 "There's no cached state on disk to show — run the task to see results.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
@@ -580,17 +579,17 @@ public sealed class TelegramBotService : BackgroundService
         }
         catch (Exception ex)
         {
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"Could not read latest output for <code>{HtmlEscape(task.Name)}</code>: {HtmlEscape(ex.Message)}",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
         if (result.Artifacts.Count == 0)
         {
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"No output yet for <code>{HtmlEscape(task.Name)}</code>.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
             return;
         }
 
@@ -610,43 +609,43 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task HandleStopCommandAsync(long chatId, string text, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
         {
-            await bot.SendMessage(chatId, "Usage: /stop <job-id>. See /jobs for IDs.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, "Usage: /stop <job-id>. See /jobs for IDs.", cancellationToken);
             return;
         }
 
         var job = _jobs.Get(id);
         if (job is null)
         {
-            await bot.SendMessage(chatId, $"No job with id {id}.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, $"No job with id {id}.", cancellationToken);
             return;
         }
         if (job.IsFinished)
         {
-            await bot.SendMessage(chatId, $"Job {id} ({job.TaskName}) is already finished.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, $"Job {id} ({job.TaskName}) is already finished.", cancellationToken);
             return;
         }
 
         var stopped = _jobs.Stop(id);
-        await bot.SendMessage(chatId,
+        await _provider.SendTextAsync(chat,
             stopped
                 ? $"Sent kill to job {id} ({job.TaskName}, pid {job.Pid})."
                 : $"Could not stop job {id}. See logs.",
-            cancellationToken: cancellationToken);
+            cancellationToken);
     }
 
     private async Task SendJobsListAsync(long chatId, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
         _jobs.Refresh();
         var jobs = _jobs.List();
         if (jobs.Count == 0)
         {
-            await bot.SendMessage(chatId, "No jobs yet. Tasks with <code>longRunning: true</code> show up here once started.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+            await _provider.SendHtmlAsync(chat, "No jobs yet. Tasks with <code>longRunning: true</code> show up here once started.",
+                cancellationToken);
             return;
         }
 
@@ -678,7 +677,7 @@ public sealed class TelegramBotService : BackgroundService
             }
         }
 
-        await bot.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        await _provider.SendHtmlAsync(ProviderChatId.FromTelegram(chatId), sb.ToString(), cancellationToken);
     }
 
     private async Task SendLatestJobStatusAsync(long chatId, CancellationToken cancellationToken)
@@ -690,7 +689,7 @@ public sealed class TelegramBotService : BackgroundService
             .FirstOrDefault();
         if (latest is null)
         {
-            await _bot!.SendMessage(chatId, "No jobs yet.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(ProviderChatId.FromTelegram(chatId), "No jobs yet.", cancellationToken);
             return;
         }
         await SendJobStatusAsync(chatId, latest.Id, cancellationToken);
@@ -698,12 +697,12 @@ public sealed class TelegramBotService : BackgroundService
 
     private async Task SendJobStatusAsync(long chatId, int id, CancellationToken cancellationToken)
     {
-        var bot = _bot!;
+        var chat = ProviderChatId.FromTelegram(chatId);
         _jobs.Refresh();
         var job = _jobs.Get(id);
         if (job is null)
         {
-            await bot.SendMessage(chatId, $"No job with id {id}.", cancellationToken: cancellationToken);
+            await _provider.SendTextAsync(chat, $"No job with id {id}.", cancellationToken);
             return;
         }
 
@@ -722,25 +721,25 @@ public sealed class TelegramBotService : BackgroundService
                   .Append(" (pid ").Append(job.Pid).Append(")\n");
         }
         header.Append("log: <code>").Append(HtmlEscape(job.LogPath)).Append("</code>");
-        await bot.SendMessage(chatId, header.ToString(), parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+        await _provider.SendHtmlAsync(chat, header.ToString(), cancellationToken);
 
         var tail = _jobs.TailLog(id, 30);
         if (!string.IsNullOrWhiteSpace(tail))
         {
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 $"<b>Log tail</b>\n<pre>{HtmlEscape(tail)}</pre>",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
         }
         else if (File.Exists(job.LogPath) && !job.IsFinished)
         {
             // Empty log on a still-running job almost always means Python (or similar)
             // is block-buffering stdout because it's redirected to a file. Surface this
             // explicitly — silence here is the worst UX.
-            await bot.SendMessage(chatId,
+            await _provider.SendHtmlAsync(chat,
                 "Log is empty so far. If this is a Python script, stdout is likely block-buffered " +
                 "when redirected. Re-run with <code>PYTHONUNBUFFERED=1</code> in the task's env, " +
                 "or invoke <code>python -u</code> / <code>stdbuf -oL python …</code>.",
-                parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+                cancellationToken);
         }
 
         // Re-evaluate the task's original output spec so an Images-output task surfaces
@@ -765,9 +764,9 @@ public sealed class TelegramBotService : BackgroundService
                 }
                 else if (job.IsFinished)
                 {
-                    await bot.SendMessage(chatId,
+                    await _provider.SendTextAsync(chat,
                         "No new outputs were produced by this job.",
-                        cancellationToken: cancellationToken);
+                        cancellationToken);
                 }
             }
             catch (Exception ex)
