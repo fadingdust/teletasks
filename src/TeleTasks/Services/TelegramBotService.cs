@@ -3,12 +3,11 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
-using Telegram.Bot.Exceptions;
-using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
+using TeleTasks.Services.Chat;
 // Disambiguating alias: Telegram.Bot.Types also exports a type named ChatId,
 // so the local provider-qualified ChatId would otherwise be shadowed.
 using ProviderChatId = TeleTasks.Services.Chat.ChatId;
@@ -18,6 +17,7 @@ namespace TeleTasks.Services;
 public sealed class TelegramBotService : BackgroundService
 {
     private readonly TelegramOptions _options;
+    private readonly IChatProvider _provider;
     private readonly TaskRegistry _registry;
     private readonly TaskMatcher _matcher;
     private readonly TaskExecutor _executor;
@@ -28,10 +28,13 @@ public sealed class TelegramBotService : BackgroundService
     private readonly ILogger<TelegramBotService> _logger;
 
     private TelegramBotClient? _bot;
+#pragma warning disable CS0649 // vestigial; provider strips @-mentions, dead reader removed in 2b.7
     private string? _botUsername;
+#pragma warning restore CS0649
 
     public TelegramBotService(
         IOptions<TelegramOptions> options,
+        IChatProvider provider,
         TaskRegistry registry,
         TaskMatcher matcher,
         TaskExecutor executor,
@@ -42,6 +45,7 @@ public sealed class TelegramBotService : BackgroundService
         ILogger<TelegramBotService> logger)
     {
         _options = options.Value;
+        _provider = provider;
         _registry = registry;
         _matcher = matcher;
         _executor = executor;
@@ -61,17 +65,14 @@ public sealed class TelegramBotService : BackgroundService
         }
 
         _registry.Load();
+        // Sends in 2b.2-2b.6 still go through this client; deletion belongs to 2b.7.
+        // A second TelegramBotClient on the same token is fine for HTTP send paths —
+        // long-poll receive is the only single-owner concern, and the provider owns it.
         _bot = new TelegramBotClient(_options.Token, cancellationToken: stoppingToken);
 
-        var me = await _bot.GetMe(stoppingToken);
-        _botUsername = me.Username;
-        _logger.LogInformation("Telegram bot @{Username} started ({Tasks} task(s) loaded).",
-            _botUsername, _registry.Tasks.Count);
-
-        await _bot.DropPendingUpdates(stoppingToken);
-
-        _bot.OnError += OnErrorAsync;
-        _bot.OnMessage += OnMessageAsync;
+        await _provider.StartAsync(stoppingToken);
+        _provider.OnMessage += OnIncomingAsync;
+        _logger.LogInformation("Loaded {Tasks} task(s).", _registry.Tasks.Count);
 
         await CheckOllamaHealthAndNotifyAsync(stoppingToken);
 
@@ -304,16 +305,25 @@ public sealed class TelegramBotService : BackgroundService
         }
     }
 
-    private async Task OnMessageAsync(Message message, UpdateType updateType)
+    private async Task OnIncomingAsync(IncomingMessage message)
     {
         var bot = _bot!;
         var ct = CancellationToken.None;
 
-        if (message.Text is not { } text) return;
+        var text = message.Text;
+        if (string.IsNullOrEmpty(text)) return;
 
-        var userId = message.From?.Id ?? 0;
-        var chatId = message.Chat.Id;
-        var username = message.From?.Username ?? message.From?.FirstName ?? "unknown";
+        // Provider hands us provider-native ids as strings; adapt back to longs
+        // so the existing handler body stays untouched. The 2d.3 allow-list-
+        // delegation step deletes this adapter when the host stops caring about
+        // the underlying id type.
+        if (!long.TryParse(message.UserId, out var userId)) userId = 0;
+        if (!long.TryParse(message.Chat.Id, out var chatId))
+        {
+            _logger.LogWarning("Non-Telegram chat id {ChatId} routed to Telegram host; dropping.", message.Chat);
+            return;
+        }
+        var username = message.Username;
 
         if (!IsAuthorized(userId, chatId))
         {
@@ -1021,17 +1031,6 @@ public sealed class TelegramBotService : BackgroundService
 
     private static string HtmlEscape(string input) =>
         input.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
-
-    private Task OnErrorAsync(Exception exception, HandleErrorSource source)
-    {
-        var description = exception switch
-        {
-            ApiRequestException api => $"Telegram API error [{api.ErrorCode}] from {source}: {api.Message}",
-            _ => $"{source}: {exception}"
-        };
-        _logger.LogError("{Error}", description);
-        return Task.CompletedTask;
-    }
 
     private async Task TrySendAsync(long chatId, string text, CancellationToken cancellationToken)
     {

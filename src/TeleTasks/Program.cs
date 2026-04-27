@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using TeleTasks.Cli;
 using TeleTasks.Configuration;
 using TeleTasks.Services;
+using TeleTasks.Services.Chat;
 
 if (args.Length > 0 && args[0].Equals("discover", StringComparison.OrdinalIgnoreCase))
 {
@@ -94,6 +95,9 @@ builder.Services.AddSingleton<TaskMatcher>();
 builder.Services.AddSingleton<OllamaClient>();
 builder.Services.AddSingleton<ConversationStateTracker>();
 builder.Services.AddHttpClient(OllamaClient.HttpClientName);
+
+builder.Services.AddSingleton<TelegramChatProvider>();
+builder.Services.AddSingleton<IChatProvider>(sp => sp.GetRequiredService<TelegramChatProvider>());
 
 builder.Services.AddHostedService<TelegramBotService>();
 
