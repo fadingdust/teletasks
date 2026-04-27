@@ -158,40 +158,129 @@ returns only `Services/Chat/TelegramChatProvider.cs`.
 ## Step 2c — Extract `JobNotifierService`
 
 Goal: pull the 30s push loop
-(`RunJobNotifierLoopAsync`, `TelegramBotService.cs:100-280`-ish) out of
+(`RunJobNotifierLoopAsync`, `TelegramBotService.cs:93-232`) out of
 `TelegramBotService` into a free-standing `BackgroundService` that
 walks all jobs and dispatches per `ChatId.Provider`. This is the piece
 that unblocks "two providers running side-by-side in one process".
 
-1. New `Services/JobNotifierService.cs : BackgroundService`:
-   - Constructor takes `IEnumerable<IChatProvider>`, `JobTracker`,
-     `TaskExecutor`, `OutputCollector`, `ILogger`, the relevant
-     options.
-   - Builds `Dictionary<string, IChatProvider>` keyed by
-     `provider.Name` once at start.
-   - Per-tick: for each active job with a `ChatId`, look up
-     `_providers[job.ChatId.Provider]`; if missing, log once and
-     skip; otherwise run the existing artifact-diff +
-     completion-summary logic against that provider's `Send*Async`.
-   - Drop the `long.TryParse(chatRef.Id, …)` guard — the provider
-     handles its own id parsing.
-2. `TelegramBotService` shrinks to "host one provider + route incoming
-   messages". Notifier code is gone.
-3. Move `JobPollSeconds` config out of `TelegramOptions` into a new
-   `ChatOptions` (`Chat:JobPollSeconds`); read both for one release
-   with a fallback so existing `appsettings.Local.json` files don't
-   break. (Actual rename can happen in step 2d.)
-4. `Program.cs` registers `JobNotifierService` as a hosted service
-   alongside `TelegramBotService`.
+Three small commits. Each builds clean, keeps the suite green, and
+is reviewable on its own.
 
-Tests:
+### 2c.1 — Extract `ChatResultDispatcher`
 
-- New `JobNotifierServiceTests` with two fake providers and seeded
-  `JobRecord`s that point at each. Asserts the right provider gets
-  the artifact pushes and the unknown-provider job is skipped with
-  a single warning.
-- Existing notifier-loop assertions inside the integration harness
-  re-target the new service.
+`SendResultAsync` (TelegramBotService.cs:919) is shared by the
+notifier (`PushNewArtifactsAsync` at line 203), task execution
+(line 459), `/results` (line 587), and `/job N` (line 754). The
+notifier extraction needs it too, so pull it out first as a
+standalone helper rather than duplicate the artifact-rendering
+switch.
+
+- New `Services/Chat/ChatResultDispatcher.cs`. Single entry point:
+  ```csharp
+  public Task DispatchAsync(
+      IChatProvider provider,
+      ChatId chat,
+      TaskExecutionResult result,
+      CancellationToken ct)
+  ```
+  Body is the existing `SendResultAsync` switch (text → SendHtmlAsync
+  with `<pre>` wrap, image → SendImageAsync, file → SendDocumentAsync,
+  trailing error message → SendHtmlAsync). No behavior change.
+- `TelegramBotService`:
+  - Constructor takes `ChatResultDispatcher _dispatcher`.
+  - Each `await SendResultAsync(chatId, result, ct)` becomes
+    `await _dispatcher.DispatchAsync(_provider, chat, result, ct)`.
+    Five call sites (lines 203, 459, 587, 754, 916).
+  - Delete the now-unused `SendResultAsync` private method.
+- `Program.cs` registers `ChatResultDispatcher` as singleton.
+
+Pure refactor. ~60 lines moved between files; no logic touched.
+
+### 2c.2 — Add `JobNotifierService` as dead code
+
+Drop the new file in without registering it as a hosted service. The
+existing notifier in `TelegramBotService` keeps running; the new file
+is on disk but no DI path wakes it up.
+
+- New `Services/JobNotifierService.cs : BackgroundService`:
+  - Constructor takes `IEnumerable<IChatProvider> providers`,
+    `JobTracker jobs`, `TaskExecutor executor`,
+    `ChatResultDispatcher dispatcher`,
+    `IOptions<TelegramOptions> options`,
+    `ILogger<JobNotifierService> logger`.
+  - `ExecuteAsync` builds
+    `_providersByName = providers.ToDictionary(p => p.Name)` once,
+    then runs the existing poll loop verbatim. `JobPollSeconds <= 0`
+    behavior preserved.
+  - `PollJobsOnceAsync` walks `_jobs.List(50)`, gates by
+    `job.ChatId is { } chatRef`, looks up
+    `_providersByName.TryGetValue(chatRef.Provider, out var provider)`.
+    Missing-provider jobs get one warning (deduplicated via a
+    `HashSet<string>` of providers we've already complained about)
+    and are skipped on subsequent ticks too.
+  - `PushNewArtifactsAsync(IChatProvider provider, ChatId chat, JobRecord job, ct)`
+    and `PushCompletionAsync(IChatProvider provider, ChatId chat, JobRecord job, ct)`
+    are direct ports of the existing methods, with `long chatId`
+    replaced by `(IChatProvider, ChatId)` and the
+    `long.TryParse(chatRef.Id, …)` guard removed.
+  - The completion summary's `bot.SendMessage(chatId, summary, …, Html)`
+    becomes `provider.SendHtmlAsync(chat, summary, ct)`. The
+    artifact-bundle send becomes
+    `_dispatcher.DispatchAsync(provider, chat, bundle, ct)`.
+- No DI registration yet. `TelegramBotService.RunJobNotifierLoopAsync`
+  still runs.
+
+Build green. Suite green (no new tests; the new file is unreached).
+
+### 2c.3 — Cut over
+
+One commit: switch hosted-service registration, delete the old loop,
+done.
+
+- `Program.cs`: register `JobNotifierService` as a hosted service.
+- `TelegramBotService`:
+  - Delete `RunJobNotifierLoopAsync`, `PollJobsOnceAsync`,
+    `PushNewArtifactsAsync`, `PushCompletionAsync`.
+  - Replace `await RunJobNotifierLoopAsync(stoppingToken)` in
+    `ExecuteAsync` with `await Task.Delay(Timeout.Infinite, stoppingToken)`
+    (the host stays alive while messages route on the provider's
+    callback thread).
+- Constructor loses `JobTracker _jobs` and `TaskExecutor _executor`
+  if they're now only referenced by message handlers — verify with a
+  build, keep what `OnIncomingAsync` needs (matcher/`/jobs`/`/job N`
+  command handlers still use both).
+
+Behavior identical: the notifier just moved. Single Telegram-only
+deployment can't tell the difference; multi-provider future is now
+unblocked because the loop iterates `IEnumerable<IChatProvider>`.
+
+### Notes on what 2c deliberately defers
+
+- **`JobPollSeconds` config rename.** New service still reads
+  `IOptions<TelegramOptions>.JobPollSeconds`. The move to
+  `Chat:JobPollSeconds` (with one release of legacy fallback) belongs
+  to step 2d's per-provider config rework — bundling it here would
+  mean shipping a config-migration commit alongside a code
+  refactor.
+- **Startup health-check DM.** `CheckOllamaHealthAndNotifyAsync`
+  stays in `TelegramBotService` for 2c. After 2b.6 it already uses
+  `_provider.DefaultRecipient`, so it's provider-agnostic in spirit;
+  the actual relocation (probably to a `ChatHost` or its own hosted
+  service) happens in step 2d when `TelegramBotService` becomes
+  `ChatHost`.
+- **Notifier test coverage.** The notifier loop has zero automated
+  tests today — behavior is verified manually in a real Telegram
+  chat. Adding `JobNotifierServiceTests` (two fake providers, seeded
+  `JobRecord`s, assert the right provider gets the artifact pushes
+  and unknown-provider jobs get one warning then quiet) is genuinely
+  useful but is its own ~150-line commit. Schedule as 2c.4 if you
+  want the regression net before step 3 lands Discord, or skip and
+  rely on the multi-provider integration test that step 3 brings.
+- **Per-provider opt-out for noisy jobs.** IDEAS.md's
+  "`/notify off N`" idea slots cleanly into the new service (one
+  bool on `JobRecord`, one gate in `PushNewArtifactsAsync`). Out of
+  scope for 2c — it's a feature, not part of the multi-provider
+  refactor.
 
 ## Step 2d — Per-provider config + rename `TelegramBotService` → `ChatHost`
 
