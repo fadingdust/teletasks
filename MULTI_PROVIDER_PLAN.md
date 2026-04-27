@@ -528,6 +528,51 @@ class instead of a refactor:
    exchanges, persists. No actual provider implements the interface
    yet — Slack would be the obvious first one in a follow-up.
 
+## Cross-step cleanup checklist
+
+Things the per-step descriptions above don't spell out, surfaced after
+a careful read-through. None block the sequence; all are "the kind of
+thing you'd discover at `git commit` time and fix in the same commit."
+
+- **`_bot` field stays through 2b.6, deleted in 2b.7.** 2b.1 drops the
+  `_bot` *subscriptions* (GetMe / OnMessage / OnError /
+  DropPendingUpdates) but the line `_bot = new TelegramBotClient(...)`
+  has to remain because every send through 2b.6 still uses it. The
+  field deletion belongs to 2b.7's scaffolding wipe.
+- **Drop unused `using Telegram.Bot.*` directives as the references
+  go.** After 2b.1, `Telegram.Bot.Exceptions` and
+  `Telegram.Bot.Polling` have no live references; let them sit and
+  CS8019 ("unused using") accumulates. Each step removes its own
+  newly-unused imports; 2b.7 mops up whatever's left.
+- **Token early-exit changes shape in 2b.1.** Today the host's
+  `if (no token) return;` shuts down the BackgroundService entirely.
+  After 2b.1, `provider.StartAsync` logs-and-returns on no-token and
+  the host subscribes + waits forever. Bot is non-functional in both
+  worlds; only the journal output differs ("service exited" vs
+  "service idle"). Worth a sentence in the 2b.1 commit message.
+- **Dead `@`-stripping in `HandleCommandAsync`** (currently lines
+  471–481) becomes unreachable after 2b.1 — the provider strips
+  `@MyBot` before raising `OnMessage`, so the host never sees `@` in
+  command text. Let it sit; 2b.7 deletes it alongside `_botUsername`.
+- **`appsettings.example.json` updates to the new shape ride 2d.2.**
+  The example file currently shows `Telegram:*`; once the provider
+  reads `Chat:Providers:Telegram:*` (with legacy fallback), the
+  example should advertise the new shape so new installs adopt it.
+- **`_options` field becomes fully unused after 2d.3.** 2c kills the
+  notifier reader, 2b.6 swaps the `AllowedUserIds[0]` use for
+  `provider.DefaultRecipient`, 2b.7 kills the `_options.Token`
+  reference, 2d.1 moves `StartupNotificationsEnabled`, and 2d.3 (the
+  allow-list delegation) removes the last reader. Delete the field
+  and its `IOptions<TelegramOptions>` constructor param in 2d.3 so
+  2d.4 doesn't carry dead injection into `MessageRouter` /
+  `ChatHost`.
+- **`SetupCommand` (the wizard) and `README.md` config examples**
+  still reference `Telegram:Token` after 2d. Legacy fallback means
+  they keep working, but they should migrate to the new shape. Bundle
+  with step 3's `--provider discord` wizard branch (single docs +
+  wizard refresh commit), not before — premature wizard churn means
+  rewriting it again when Discord lands.
+
 ## Cross-cutting concerns
 
 **Backward compat for `jobs.json`.** Legacy bare-`long` `chatId` is
