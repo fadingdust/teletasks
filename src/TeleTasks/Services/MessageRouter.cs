@@ -228,6 +228,9 @@ public sealed class MessageRouter
             case "/stop":
                 await HandleStopCommandAsync(chat, text, cancellationToken);
                 break;
+            case "/clearjobs":
+                await HandleClearJobsCommandAsync(chat, text, cancellationToken);
+                break;
             case "/cancel":
                 // OnIncomingAsync entry path already cleared any pending state
                 // when a slash command arrived; this branch just acknowledges.
@@ -332,6 +335,24 @@ public sealed class MessageRouter
                 ? $"Sent kill to job {id} ({job.TaskName}, pid {job.Pid})."
                 : $"Could not stop job {id}. See logs.",
             cancellationToken);
+    }
+
+    private async Task HandleClearJobsCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var space = text.IndexOf(' ');
+        var arg = space < 0 ? null : text[(space + 1)..].Trim();
+        var forceAll = string.Equals(arg, "all", StringComparison.OrdinalIgnoreCase);
+
+        _jobs.Refresh();
+        var removed = _jobs.Prune(forceAll);
+        var kept = _jobs.List().Count(j => j.IsFinished);
+
+        var msg = forceAll
+            ? $"Cleared all {removed} finished job(s)."
+            : removed == 0
+                ? "No finished jobs to prune (all within retention floor)."
+                : $"Cleared {removed} finished job(s), kept {kept} per retention floor.";
+        await _provider.SendTextAsync(chat, msg, cancellationToken);
     }
 
     private async Task SendJobsListAsync(ChatId chat, CancellationToken cancellationToken)
@@ -600,6 +621,8 @@ public sealed class MessageRouter
         "  /jobs           - list active and recent long-running jobs\n" +
         "  /job N          - status, log tail, and current output for job N\n" +
         "  /stop N         - kill a running job\n" +
+        "  /clearjobs      - prune finished jobs per retention policy\n" +
+        "  /clearjobs all  - wipe all finished jobs (running jobs always kept)\n" +
         "  /cancel         - abort a pending parameter-collection prompt\n" +
         "  /whoami         - show your user/chat IDs\n" +
         "  /help           - this message\n\n" +

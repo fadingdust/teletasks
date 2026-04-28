@@ -86,6 +86,12 @@ JSON-Schema-constrained output.
   to `kill -KILL -<pid>` against the session group when the initial
   `Process.Kill(entireProcessTree)` doesn't take), `Killed` flag tracked
   separately from natural exit.
+- **Startup retention pruner** + **`/clearjobs`** — finished jobs pruned
+  at startup and on demand. Policy: per-task floor (`JobRetentionMinPerTask`,
+  default 5), age cutoff (`JobRetentionDays`, default 14), global cap
+  (`JobRetentionMaxTotal`, default 200), `JobRetentionKeepFailed` (default
+  true). `/clearjobs all` wipes all finished jobs; running and un-notified
+  jobs always survive. Log files pruned in sympathy with their records.
 - **Push notifier loop** — 30s poll
   (`Telegram:JobPollSeconds`, 0 disables). Per active job: pushes new
   artifacts (mtime ≥ start, finished-job upper-bound at finish + 10s
@@ -179,6 +185,7 @@ JSON-Schema-constrained output.
 - `/dry <text>` — resolve a task and show what would run, without running
 - `/results <task>` — show the latest output of a task without re-running
 - `/jobs`, `/job <N>`, `/stop <N>` — long-running job management
+- `/clearjobs` / `/clearjobs all` — prune finished jobs (policy / full wipe)
 - `/cancel` — abort a pending parameter-collection prompt
 
 ---

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
 using TeleTasks.Services;
@@ -47,7 +48,10 @@ public sealed class JobTrackerTests : IDisposable
         try { Directory.Delete(_configDir, recursive: true); } catch { }
     }
 
-    private JobTracker NewTracker() => new(NullLogger<JobTracker>.Instance);
+    private static readonly IOptions<ChatOptions> DefaultOptions = Options.Create(new ChatOptions());
+
+    private JobTracker NewTracker(ChatOptions? options = null) =>
+        new(NullLogger<JobTracker>.Instance, options is null ? DefaultOptions : Options.Create(options));
 
     private static TaskDefinition Sleep(int seconds = 60, string name = "sleep_test")
     {
@@ -390,6 +394,155 @@ public sealed class JobTrackerTests : IDisposable
         var second = StartSleep(tracker2);
 
         Assert.True(second.Id > first.Id);
+    }
+
+    // ─── Prune ────────────────────────────────────────────────────────
+
+    private JobRecord AddFinishedJob(JobTracker tracker, string taskName = "task_a",
+        DateTime? startedAt = null, int exitCode = 0)
+    {
+        // Write a finished record directly into the tracker via the public API
+        // by starting a trivially fast job and waiting for it to exit.
+        var job = tracker.Start(
+            new TaskDefinition { Name = taskName },
+            new Dictionary<string, object?>(),
+            "/bin/sh", new[] { "-c", $"exit {exitCode}" });
+        _spawnedPids.Add(job.Pid);
+        WaitFor(() =>
+        {
+            tracker.Refresh();
+            return tracker.Get(job.Id)!.IsFinished;
+        }, TimeSpan.FromSeconds(5));
+
+        if (startedAt.HasValue)
+        {
+            // Back-date the record so age-based pruning can be tested without
+            // actually sleeping for 14 days.
+            tracker.Get(job.Id)!.StartedAtUtc = startedAt.Value;
+        }
+        return tracker.Get(job.Id)!;
+    }
+
+    [Fact]
+    public void Prune_removes_expired_jobs_outside_retention_floor()
+    {
+        var opts = new ChatOptions
+        {
+            JobRetentionDays = 1,
+            JobRetentionMinPerTask = 1,
+            JobRetentionMaxTotal = 200,
+            JobRetentionKeepFailed = true
+        };
+        var tracker = NewTracker(opts);
+        var old = DateTime.UtcNow.AddDays(-2);
+
+        var kept = AddFinishedJob(tracker, "task_a"); // recent — within floor
+        var expired = AddFinishedJob(tracker, "task_a", startedAt: old);
+
+        var removed = tracker.Prune();
+
+        Assert.Equal(1, removed);
+        Assert.NotNull(tracker.Get(kept.Id));
+        Assert.Null(tracker.Get(expired.Id));
+    }
+
+    [Fact]
+    public void Prune_respects_MinPerTask_floor_even_when_expired()
+    {
+        var opts = new ChatOptions
+        {
+            JobRetentionDays = 1,
+            JobRetentionMinPerTask = 2,
+            JobRetentionMaxTotal = 200,
+            JobRetentionKeepFailed = true
+        };
+        var tracker = NewTracker(opts);
+        var old = DateTime.UtcNow.AddDays(-30);
+
+        var j1 = AddFinishedJob(tracker, "task_a", startedAt: old);
+        var j2 = AddFinishedJob(tracker, "task_a", startedAt: old);
+        var j3 = AddFinishedJob(tracker, "task_a", startedAt: old);
+
+        var removed = tracker.Prune();
+
+        // Floor is 2 so only the oldest (j1) should be pruned.
+        Assert.Equal(1, removed);
+        Assert.Null(tracker.Get(j1.Id));
+        Assert.NotNull(tracker.Get(j2.Id));
+        Assert.NotNull(tracker.Get(j3.Id));
+    }
+
+    [Fact]
+    public void Prune_forceAll_removes_all_finished_jobs()
+    {
+        var tracker = NewTracker();
+
+        var j1 = AddFinishedJob(tracker, "task_a");
+        var j2 = AddFinishedJob(tracker, "task_b");
+
+        var removed = tracker.Prune(forceAll: true);
+
+        Assert.Equal(2, removed);
+        Assert.Null(tracker.Get(j1.Id));
+        Assert.Null(tracker.Get(j2.Id));
+    }
+
+    [Fact]
+    public void Prune_never_removes_running_jobs()
+    {
+        var tracker = NewTracker();
+        var running = StartSleep(tracker);
+        AddFinishedJob(tracker, "task_a");
+
+        tracker.Prune(forceAll: true);
+
+        Assert.NotNull(tracker.Get(running.Id));
+        Assert.False(tracker.Get(running.Id)!.IsFinished);
+    }
+
+    [Fact]
+    public void Prune_enforces_MaxTotal_cap_oldest_first()
+    {
+        var opts = new ChatOptions
+        {
+            JobRetentionDays = 365,
+            JobRetentionMinPerTask = 0,
+            JobRetentionMaxTotal = 2,
+            JobRetentionKeepFailed = true
+        };
+        var tracker = NewTracker(opts);
+        var old = DateTime.UtcNow.AddDays(-10);
+
+        var oldest = AddFinishedJob(tracker, "task_a", startedAt: old);
+        var mid    = AddFinishedJob(tracker, "task_b", startedAt: DateTime.UtcNow.AddDays(-5));
+        var newest = AddFinishedJob(tracker, "task_c"); // most recent, should survive
+
+        var removed = tracker.Prune();
+
+        Assert.Equal(1, removed);
+        Assert.Null(tracker.Get(oldest.Id));
+        Assert.NotNull(tracker.Get(mid.Id));
+        Assert.NotNull(tracker.Get(newest.Id));
+    }
+
+    [Fact]
+    public void Prune_deletes_log_files_for_removed_jobs()
+    {
+        var opts = new ChatOptions
+        {
+            JobRetentionDays = 1,
+            JobRetentionMinPerTask = 0,
+            JobRetentionMaxTotal = 200,
+            JobRetentionKeepFailed = true
+        };
+        var tracker = NewTracker(opts);
+        var job = AddFinishedJob(tracker, "task_a", startedAt: DateTime.UtcNow.AddDays(-2));
+        var logPath = job.LogPath;
+
+        tracker.Prune();
+
+        Assert.Null(tracker.Get(job.Id));
+        Assert.False(File.Exists(logPath));
     }
 
     [Fact]

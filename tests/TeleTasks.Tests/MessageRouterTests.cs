@@ -44,7 +44,7 @@ public sealed class MessageRouterTests : IDisposable
         var registry = new TaskRegistry(catalogOptions, new TestEnv(_configDir), NullLogger<TaskRegistry>.Instance);
         registry.Load();
 
-        var jobTracker = new JobTracker(NullLogger<JobTracker>.Instance);
+        var jobTracker = new JobTracker(NullLogger<JobTracker>.Instance, Options.Create(new ChatOptions()));
         var outputCollector = new OutputCollector(NullLogger<OutputCollector>.Instance);
         var executor = new TaskExecutor(catalogOptions, outputCollector, jobTracker, NullLogger<TaskExecutor>.Instance);
         var ollamaClient = new OllamaClient(new NullHttpClientFactory(), ollamaOptions, NullLogger<OllamaClient>.Instance);

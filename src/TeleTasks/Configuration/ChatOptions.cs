@@ -27,6 +27,11 @@ public sealed class ChatOptions
     /// configured model not pulled).
     /// </summary>
     public bool StartupNotificationsEnabled { get; set; } = true;
+
+    public int JobRetentionDays { get; set; } = 14;
+    public int JobRetentionMinPerTask { get; set; } = 5;
+    public int JobRetentionMaxTotal { get; set; } = 200;
+    public bool JobRetentionKeepFailed { get; set; } = true;
 }
 
 /// <summary>

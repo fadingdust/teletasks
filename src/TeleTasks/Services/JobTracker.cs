@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TeleTasks.Configuration;
 using TeleTasks.Models;
 using TeleTasks.Services.Chat;
@@ -24,6 +25,7 @@ public sealed class JobTracker
     };
 
     private readonly ILogger<JobTracker> _logger;
+    private readonly IOptions<ChatOptions> _options;
     private readonly object _gate = new();
     private readonly ConcurrentDictionary<int, JobRecord> _jobs = new();
     private int _nextId = 1;
@@ -31,14 +33,18 @@ public sealed class JobTracker
     public string LogDirectory { get; }
     public string RegistryPath { get; }
 
-    public JobTracker(ILogger<JobTracker> logger)
+    public JobTracker(ILogger<JobTracker> logger, IOptions<ChatOptions> options)
     {
         _logger = logger;
+        _options = options;
         var configDir = UserConfigDirectory.EnsureExists();
         LogDirectory = Path.Combine(configDir, "run-logs");
         RegistryPath = Path.Combine(configDir, "jobs.json");
         Directory.CreateDirectory(LogDirectory);
         LoadAndReconcile();
+        var pruned = Prune();
+        if (pruned > 0)
+            _logger.LogInformation("Startup pruner removed {Count} finished job(s).", pruned);
     }
 
     public IReadOnlyList<JobRecord> List(int max = 50)
@@ -121,6 +127,79 @@ public sealed class JobTracker
             "Started job {Id} '{Task}' as pid {Pid}. log={Log}",
             id, task.Name, pid, logPath);
         return record;
+    }
+
+    public int Prune(bool forceAll = false)
+    {
+        var options = _options.Value;
+        var toRemove = new HashSet<int>();
+
+        var finishedJobs = _jobs.Values
+            .Where(j => j.IsFinished)
+            .OrderByDescending(j => j.StartedAtUtc)
+            .ToList();
+
+        if (forceAll)
+        {
+            foreach (var job in finishedJobs) toRemove.Add(job.Id);
+        }
+        else
+        {
+            var keepSet = new HashSet<int>();
+            var taskGroups = finishedJobs.GroupBy(j => j.TaskName);
+
+            foreach (var group in taskGroups)
+            {
+                int floorCount = 0;
+                foreach (var job in group)
+                {
+                    bool countsTowardFloor = (job.ExitCode == 0 && !job.Killed) || options.JobRetentionKeepFailed;
+                    if (countsTowardFloor && floorCount < options.JobRetentionMinPerTask)
+                    {
+                        keepSet.Add(job.Id);
+                        floorCount++;
+                    }
+                }
+            }
+
+            var canPrune = finishedJobs.Where(j => !keepSet.Contains(j.Id)).ToList();
+            
+            // Prune based on age
+            var cutoff = DateTime.UtcNow.AddDays(-options.JobRetentionDays);
+            var expired = canPrune.Where(j => j.StartedAtUtc < cutoff).ToList();
+            foreach (var job in expired) toRemove.Add(job.Id);
+
+            // Enforce global max cap
+            var stillIn = finishedJobs.Where(j => !toRemove.Contains(j.Id)).ToList();
+            if (stillIn.Count > options.JobRetentionMaxTotal)
+            {
+                int excess = stillIn.Count - options.JobRetentionMaxTotal;
+                var oldest = stillIn
+                    .Where(j => !keepSet.Contains(j.Id))
+                    .OrderBy(j => j.StartedAtUtc)
+                    .Take(excess);
+                foreach (var job in oldest) toRemove.Add(job.Id);
+            }
+        }
+
+        int removedCount = 0;
+        foreach (var id in toRemove)
+        {
+            if (_jobs.TryRemove(id, out var job))
+            {
+                removedCount++;
+                DeleteJobFiles(job);
+            }
+        }
+
+        if (removedCount > 0) Persist();
+        return removedCount;
+    }
+
+    private void DeleteJobFiles(JobRecord job)
+    {
+        try { if (File.Exists(job.LogPath)) File.Delete(job.LogPath); } catch { }
+        try { if (File.Exists(job.ExitCodePath)) File.Delete(job.ExitCodePath); } catch { }
     }
 
     public bool Stop(int id)
