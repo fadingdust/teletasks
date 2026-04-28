@@ -53,14 +53,16 @@ builder.Configuration
     .AddEnvironmentVariables(prefix: "TELETASKS_")
     .AddCommandLine(args);
 
-if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
+var telegramToken = builder.Configuration["Chat:Providers:Telegram:Token"]
+    ?? builder.Configuration["Telegram:Token"];
+if (string.IsNullOrWhiteSpace(telegramToken))
 {
     if (Console.IsInputRedirected || Console.IsOutputRedirected)
     {
         Console.Error.WriteLine(
-            "Telegram:Token not configured and stdin/stdout are not a terminal.");
+            "Chat:Providers:Telegram:Token not configured and stdin/stdout are not a terminal.");
         Console.Error.WriteLine(
-            "Run `dotnet run -- setup` once interactively, or set TELETASKS_Telegram__Token.");
+            "Run `dotnet run -- setup` once interactively, or set TELETASKS_Chat__Providers__Telegram__Token.");
         return 1;
     }
 
