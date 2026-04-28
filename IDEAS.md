@@ -142,17 +142,52 @@ traceability.
 
 ### Old jobs clearing / reset
 `jobs.json` accumulates indefinitely. After dozens of runs `/jobs` is
-cluttered with finished entries we don't care about. Two knobs:
-- Auto-prune finished jobs older than N days at startup
-  (`Telegram:JobRetentionDays`, default 14).
-- `/clear-jobs` slash command for manual purge of all finished jobs
-  (running ones survive). Confirm before executing.
-Run-log files in `~/.config/teletasks/run-logs/` should be pruned in
-sympathy — match `<task>-<id>-<ts>.log` against the surviving
-`JobRecord` ids and delete the orphans. Keep the still-running ones
-plus N most recent finished.
-- Open: separate retention for log files (you might want job records
-  gone but logs preserved on disk for grep)?
+cluttered with finished entries we don't care about.
+
+**Retention policy** (applied at startup, running and un-notified jobs
+always exempt):
+
+1. For each task name, keep the `JobRetentionMinPerTask` most recent
+   finished jobs unconditionally (floor, regardless of age). Default 5.
+   Preserves enough history for `/history N` comparisons and
+   `/restart N` for every task.
+2. Prune any finished job beyond that floor if it is also older than
+   `JobRetentionDays` days. Default 14.
+3. After per-task floors are satisfied, enforce `JobRetentionMaxTotal`
+   as a hard cap on total finished jobs across all tasks. Prune
+   oldest-first until under the cap. Default 200. Prevents runaway
+   growth when many tasks each hit the K=5 floor simultaneously.
+4. The protected record per task is the most recent *run* regardless of
+   exit code - parameters are what matter for restart, and `/results`
+   already handles the no-output case gracefully.
+5. Tasks removed from `tasks.json` still receive the per-task floor
+   protection on their historical records.
+
+**Config** (under `Chat:`):
+```json
+"Chat": {
+  "JobRetentionDays": 14,
+  "JobRetentionMinPerTask": 5,
+  "JobRetentionMaxTotal": 200,
+  "JobRetentionKeepFailed": true
+}
+```
+`JobRetentionKeepFailed`: when false, failed/killed jobs don't count
+toward the per-task floor and are pruned more aggressively. Default true.
+
+**Log files** (`~/.config/teletasks/run-logs/`): pruned in sympathy -
+orphan logs for pruned job records are deleted. Logs can be large (MB
+range) so a separate `JobLogRetentionMinPerTask` (default lower than
+`JobRetentionMinPerTask`) or `JobLogRetentionDays` lets you keep
+compact job records longer than their verbose logs.
+
+**`/clear-jobs`** slash command for on-demand purge. Two modes:
+- `/clear-jobs` - applies the same retention policy as the startup
+  pruner (respects `JobRetentionMinPerTask` floor per task).
+- `/clear-jobs all` - full wipe of all finished jobs regardless of
+  floor. Running and un-notified jobs always survive either way.
+Both show a confirmation line before acting ("Cleared 47 finished jobs,
+kept 12 per retention floor." / "Cleared all 59 finished jobs.").
 
 ### PID-cookie hardening for `JobTracker`
 Compare `/proc/<pid>` start-time against `job.StartedAtUtc` in

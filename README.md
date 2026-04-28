@@ -133,9 +133,9 @@ cp src/TeleTasks/tasks.example.json       src/TeleTasks/tasks.json
 
 Any setting can also be supplied via env vars prefixed with `TELETASKS_`
 (highest priority below the command line), e.g.
-`TELETASKS_Telegram__Token=...`. Configuration precedence (highest wins):
+`TELETASKS_Chat__Providers__Telegram__Token=...`. Configuration precedence (highest wins):
 
-1. Command-line args (`--Telegram:Token=...`)
+1. Command-line args (`--Chat:Providers:Telegram:Token=...`)
 2. `TELETASKS_*` env vars
 3. `appsettings.Local.json` (the wizard's output)
 4. `appsettings.{Environment}.json`
@@ -463,7 +463,7 @@ Three things make sure problems don't get swallowed:
    to Telegram. If Ollama is unreachable, or the configured model isn't
    pulled, the bot logs a warning *and* sends a Telegram message to the first
    allow-listed user with the exact `ollama pull <model>` command needed.
-   Disable with `Telegram:StartupNotificationsEnabled = false`.
+   Disable with `Chat:StartupNotificationsEnabled = false`.
 2. **Friendly runtime errors** — when a chat request fails because Ollama
    doesn't have the model pulled (HTTP 404 / "not found") or isn't running
    (connection refused), the bot replies with an actionable message rather
@@ -514,7 +514,7 @@ Use /job 7 to check progress, /stop 7 to kill.
 ```
 
 The bot then **pushes results back to chat without you having to ask** — a
-30-second poller (`Telegram:JobPollSeconds`, set `0` to disable) walks active
+30-second poller (`Chat:JobPollSeconds`, set `0` to disable) walks active
 jobs, sends any new artifacts whose mtime is newer than the job's start, and
 posts a one-line completion summary when the job ends. Each unsolicited push
 has its caption tagged `Job 7 • render_loop` so you can tell it apart from
@@ -591,7 +591,8 @@ src/TeleTasks/
     JobTracker.cs                # detached spawn, /jobs registry, /proc reconcile
     ConversationStateTracker.cs  # multi-turn parameter collection state
     ParameterValueParser.cs      # type-coercion for user replies
-    TelegramBotService.cs        # background polling + dispatch + 30s notifier
+    ChatHost.cs                  # lifecycle: provider start/stop, Ollama health DM
+    MessageRouter.cs             # slash-command dispatch + NL task routing
     TaskCatalogWriter.cs         # load / merge / write tasks.json
     ParameterTemplate.cs         # {name} substitution, multi-pass + cycle cap
   Cli/

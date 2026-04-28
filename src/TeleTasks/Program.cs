@@ -2,9 +2,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using TeleTasks.Cli;
 using TeleTasks.Configuration;
 using TeleTasks.Services;
+using TeleTasks.Services.Chat;
 
 if (args.Length > 0 && args[0].Equals("discover", StringComparison.OrdinalIgnoreCase))
 {
@@ -51,14 +53,16 @@ builder.Configuration
     .AddEnvironmentVariables(prefix: "TELETASKS_")
     .AddCommandLine(args);
 
-if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
+var telegramToken = builder.Configuration["Chat:Providers:Telegram:Token"]
+    ?? builder.Configuration["Telegram:Token"];
+if (string.IsNullOrWhiteSpace(telegramToken))
 {
     if (Console.IsInputRedirected || Console.IsOutputRedirected)
     {
         Console.Error.WriteLine(
-            "Telegram:Token not configured and stdin/stdout are not a terminal.");
+            "Chat:Providers:Telegram:Token not configured and stdin/stdout are not a terminal.");
         Console.Error.WriteLine(
-            "Run `dotnet run -- setup` once interactively, or set TELETASKS_Telegram__Token.");
+            "Run `dotnet run -- setup` once interactively, or set TELETASKS_Chat__Providers__Telegram__Token.");
         return 1;
     }
 
@@ -85,6 +89,10 @@ if (string.IsNullOrWhiteSpace(builder.Configuration["Telegram:Token"]))
 builder.Services.Configure<TelegramOptions>(builder.Configuration.GetSection(TelegramOptions.SectionName));
 builder.Services.Configure<OllamaOptions>(builder.Configuration.GetSection(OllamaOptions.SectionName));
 builder.Services.Configure<TaskCatalogOptions>(builder.Configuration.GetSection(TaskCatalogOptions.SectionName));
+builder.Services.Configure<ChatOptions>(builder.Configuration.GetSection(ChatOptions.SectionName));
+builder.Services.AddSingleton<IConfigureOptions<ChatOptions>, ChatOptionsDefaults>();
+builder.Services.Configure<TelegramProviderOptions>(builder.Configuration.GetSection(TelegramProviderOptions.SectionName));
+builder.Services.AddSingleton<IConfigureOptions<TelegramProviderOptions>, TelegramProviderOptionsDefaults>();
 
 builder.Services.AddSingleton<TaskRegistry>();
 builder.Services.AddSingleton<OutputCollector>();
@@ -95,7 +103,13 @@ builder.Services.AddSingleton<OllamaClient>();
 builder.Services.AddSingleton<ConversationStateTracker>();
 builder.Services.AddHttpClient(OllamaClient.HttpClientName);
 
-builder.Services.AddHostedService<TelegramBotService>();
+builder.Services.AddSingleton<TelegramChatProvider>();
+builder.Services.AddSingleton<IChatProvider>(sp => sp.GetRequiredService<TelegramChatProvider>());
+builder.Services.AddSingleton<ChatResultDispatcher>();
+builder.Services.AddSingleton<MessageRouter>();
+
+builder.Services.AddHostedService<ChatHost>();
+builder.Services.AddHostedService<JobNotifierService>();
 
 builder.Logging.AddSimpleConsole(options =>
 {

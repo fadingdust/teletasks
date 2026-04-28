@@ -237,7 +237,10 @@ public static class SetupCommand
     {
         var root = existing ?? new JsonObject();
 
-        var telegram = (root["Telegram"] as JsonObject) ?? new JsonObject();
+        var chat = (root["Chat"] as JsonObject) ?? new JsonObject();
+        var providers = (chat["Providers"] as JsonObject) ?? new JsonObject();
+        var telegram = (providers["Telegram"] as JsonObject) ?? new JsonObject();
+
         telegram["Token"] = token;
 
         var allowedUsers = (telegram["AllowedUserIds"] as JsonArray) ?? new JsonArray();
@@ -247,7 +250,10 @@ public static class SetupCommand
         }
         telegram["AllowedUserIds"] = allowedUsers;
         if (telegram["AllowedChatIds"] is null) telegram["AllowedChatIds"] = new JsonArray();
-        root["Telegram"] = telegram;
+
+        providers["Telegram"] = telegram;
+        chat["Providers"] = providers;
+        root["Chat"] = chat;
 
         var ollama = (root["Ollama"] as JsonObject) ?? new JsonObject();
         ollama["Endpoint"] = endpoint;

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using TeleTasks.Services.Chat;
 
 namespace TeleTasks.Models;
 
@@ -38,13 +39,17 @@ public sealed class JobRecord
     public Dictionary<string, object?> Parameters { get; set; } = new();
 
     /// <summary>
-    /// Telegram chat that started this job. Used by the notifier loop to push
-    /// new artifacts and the completion summary back to the same conversation.
-    /// Null for jobs started before push-notifications existed; those still
-    /// work via /job N polling but won't get progressive pings.
+    /// Provider-qualified chat that started this job. Used by the notifier
+    /// loop to push new artifacts and the completion summary back to the
+    /// same conversation. Null for jobs started before push-notifications
+    /// existed; those still work via /job N polling but won't get
+    /// progressive pings. The associated <see cref="ChatIdJsonConverter"/>
+    /// reads both the new <c>"telegram:42"</c> string form and the legacy
+    /// bare <c>long</c> form, so existing <c>jobs.json</c> files survive
+    /// the multi-provider upgrade.
     /// </summary>
     [JsonPropertyName("chatId")]
-    public long? ChatId { get; set; }
+    public ChatId? ChatId { get; set; }
 
     /// <summary>
     /// Artifact paths the notifier loop has already pushed. Persisted so a bot
