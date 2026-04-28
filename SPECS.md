@@ -81,11 +81,11 @@ JSON-Schema-constrained output.
   `~/.config/teletasks/jobs.json`. Survives bot restart; reconciles
   running PIDs at startup via `/proc/<pid>/stat`; recovers exit codes
   from sidecar files for jobs that finished while the bot was down.
-- **`/jobs`, `/job <N>`, `/stop <N>`** — list active + recent finished;
-  status + log tail + re-evaluated output spec; verified kill (escalates
-  to `kill -KILL -<pid>` against the session group when the initial
-  `Process.Kill(entireProcessTree)` doesn't take), `Killed` flag tracked
-  separately from natural exit.
+- **`/jobs`, `/job <N>`, `/stop <N>`, `/restart <N>`** — list active +
+  recent finished; status + log tail + re-evaluated output spec; verified
+  kill; `/restart <N>` re-runs a finished job with its original parameters
+  as a new job (new id, `RestartedFromJobId` links back). Only finished
+  jobs can be restarted.
 - **Startup retention pruner** + **`/clearjobs`** — finished jobs pruned
   at startup and on demand. Policy: per-task floor (`JobRetentionMinPerTask`,
   default 5), age cutoff (`JobRetentionDays`, default 14), global cap
@@ -184,7 +184,7 @@ JSON-Schema-constrained output.
 - `/help`, `/start`, `/tasks`, `/reload`, `/whoami`
 - `/dry <text>` — resolve a task and show what would run, without running
 - `/results <task>` — show the latest output of a task without re-running
-- `/jobs`, `/job <N>`, `/stop <N>` — long-running job management
+- `/jobs`, `/job <N>`, `/stop <N>`, `/restart <N>` — long-running job management
 - `/clearjobs` / `/clearjobs all` — prune finished jobs (policy / full wipe)
 - `/cancel` — abort a pending parameter-collection prompt
 

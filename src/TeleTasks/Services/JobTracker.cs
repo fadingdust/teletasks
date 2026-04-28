@@ -196,6 +196,20 @@ public sealed class JobTracker
         return removedCount;
     }
 
+    public JobRecord? Restart(int oldId)
+    {
+        if (!_jobs.TryGetValue(oldId, out var old)) return null;
+        if (!old.IsFinished) return null;
+        if (old.Task is null || string.IsNullOrWhiteSpace(old.Task.Command)) return null;
+
+        var command = ParameterTemplate.Apply(old.Task.Command, old.Parameters);
+        var args = ParameterTemplate.ApplyAll(old.Task.Args, old.Parameters).ToList();
+        var newJob = Start(old.Task, old.Parameters, command, args);
+        newJob.RestartedFromJobId = oldId;
+        Persist();
+        return newJob;
+    }
+
     private void DeleteJobFiles(JobRecord job)
     {
         try { if (File.Exists(job.LogPath)) File.Delete(job.LogPath); } catch { }

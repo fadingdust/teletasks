@@ -228,6 +228,9 @@ public sealed class MessageRouter
             case "/stop":
                 await HandleStopCommandAsync(chat, text, cancellationToken);
                 break;
+            case "/restart":
+                await HandleRestartCommandAsync(chat, text, cancellationToken);
+                break;
             case "/clearjobs":
                 await HandleClearJobsCommandAsync(chat, text, cancellationToken);
                 break;
@@ -334,6 +337,48 @@ public sealed class MessageRouter
             stopped
                 ? $"Sent kill to job {id} ({job.TaskName}, pid {job.Pid})."
                 : $"Could not stop job {id}. See logs.",
+            cancellationToken);
+    }
+
+    private async Task HandleRestartCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        {
+            await _provider.SendTextAsync(chat, "Usage: /restart <job-id>. See /jobs for IDs.", cancellationToken);
+            return;
+        }
+
+        var old = _jobs.Get(id);
+        if (old is null)
+        {
+            await _provider.SendTextAsync(chat, $"No job with id {id}.", cancellationToken);
+            return;
+        }
+        if (!old.IsFinished)
+        {
+            await _provider.SendTextAsync(chat,
+                $"Job {id} ({old.TaskName}) is still running. Stop it first with /stop {id}.",
+                cancellationToken);
+            return;
+        }
+        if (old.Task is null || string.IsNullOrWhiteSpace(old.Task.Command))
+        {
+            await _provider.SendTextAsync(chat,
+                $"Job {id} has no stored task definition and cannot be restarted.",
+                cancellationToken);
+            return;
+        }
+
+        var newJob = _jobs.Restart(id);
+        if (newJob is null)
+        {
+            await _provider.SendTextAsync(chat, $"Could not restart job {id}.", cancellationToken);
+            return;
+        }
+        _jobs.AssignChat(newJob.Id, chat);
+        await _provider.SendHtmlAsync(chat,
+            $"-> Restarted job {id} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
             cancellationToken);
     }
 
@@ -621,6 +666,7 @@ public sealed class MessageRouter
         "  /jobs           - list active and recent long-running jobs\n" +
         "  /job N          - status, log tail, and current output for job N\n" +
         "  /stop N         - kill a running job\n" +
+        "  /restart N      - re-run a finished job with the same parameters\n" +
         "  /clearjobs      - prune finished jobs per retention policy\n" +
         "  /clearjobs all  - wipe all finished jobs (running jobs always kept)\n" +
         "  /cancel         - abort a pending parameter-collection prompt\n" +

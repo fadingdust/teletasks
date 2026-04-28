@@ -65,6 +65,9 @@ public sealed class JobRecord
     [JsonPropertyName("completionNotified")]
     public bool CompletionNotified { get; set; }
 
+    [JsonPropertyName("restartedFrom")]
+    public int? RestartedFromJobId { get; set; }
+
     [JsonIgnore]
     public bool IsFinished => FinishedAtUtc.HasValue;
 

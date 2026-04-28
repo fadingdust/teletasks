@@ -396,6 +396,83 @@ public sealed class JobTrackerTests : IDisposable
         Assert.True(second.Id > first.Id);
     }
 
+    // ─── Restart ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void Restart_returns_null_for_unknown_id()
+    {
+        Assert.Null(NewTracker().Restart(99999));
+    }
+
+    [Fact]
+    public void Restart_returns_null_for_a_running_job()
+    {
+        var tracker = NewTracker();
+        var job = StartSleep(tracker);
+        Assert.False(job.IsFinished);
+        Assert.Null(tracker.Restart(job.Id));
+    }
+
+    [Fact]
+    public void Restart_creates_new_job_with_RestartedFromJobId_set()
+    {
+        var tracker = NewTracker();
+        var task = new TaskDefinition { Name = "echo_task", LongRunning = true };
+        var original = tracker.Start(task, new Dictionary<string, object?>(),
+            "/bin/sh", new[] { "-c", "exit 0" });
+        _spawnedPids.Add(original.Pid);
+
+        WaitFor(() => { tracker.Refresh(); return tracker.Get(original.Id)!.IsFinished; },
+            TimeSpan.FromSeconds(5));
+
+        var restarted = tracker.Restart(original.Id);
+
+        Assert.NotNull(restarted);
+        Assert.NotEqual(original.Id, restarted!.Id);
+        Assert.Equal(original.Id, restarted.RestartedFromJobId);
+        Assert.Equal(original.TaskName, restarted.TaskName);
+        _spawnedPids.Add(restarted.Pid);
+    }
+
+    [Fact]
+    public void Restart_new_job_gets_a_running_pid()
+    {
+        var tracker = NewTracker();
+        var task = new TaskDefinition { Name = "sleep_task", LongRunning = true };
+        var original = tracker.Start(task, new Dictionary<string, object?>(),
+            "/bin/sh", new[] { "-c", "exit 0" });
+        _spawnedPids.Add(original.Pid);
+
+        WaitFor(() => { tracker.Refresh(); return tracker.Get(original.Id)!.IsFinished; },
+            TimeSpan.FromSeconds(5));
+
+        var restarted = tracker.Restart(original.Id)!;
+        _spawnedPids.Add(restarted.Pid);
+
+        Assert.True(restarted.Pid > 1);
+        Assert.False(restarted.IsFinished);
+    }
+
+    [Fact]
+    public void Restart_persists_new_job_to_registry()
+    {
+        var tracker = NewTracker();
+        var task = new TaskDefinition { Name = "echo_task", LongRunning = true };
+        var original = tracker.Start(task, new Dictionary<string, object?>(),
+            "/bin/sh", new[] { "-c", "exit 0" });
+        _spawnedPids.Add(original.Pid);
+
+        WaitFor(() => { tracker.Refresh(); return tracker.Get(original.Id)!.IsFinished; },
+            TimeSpan.FromSeconds(5));
+
+        var restarted = tracker.Restart(original.Id)!;
+        _spawnedPids.Add(restarted.Pid);
+
+        var json = File.ReadAllText(tracker.RegistryPath);
+        Assert.Contains($"\"id\": {restarted.Id}", json);
+        Assert.Contains($"\"restartedFrom\": {original.Id}", json);
+    }
+
     // ─── Prune ────────────────────────────────────────────────────────
 
     private JobRecord AddFinishedJob(JobTracker tracker, string taskName = "task_a",

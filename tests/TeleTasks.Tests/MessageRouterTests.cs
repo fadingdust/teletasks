@@ -144,6 +144,24 @@ public sealed class MessageRouterTests : IDisposable
     }
 
     [Fact]
+    public async Task Restart_without_arg_returns_usage()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/restart"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Restart_unknown_id_reports_not_found()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/restart 99"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No job with id 99", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
     public async Task Results_without_task_name_returns_usage()
     {
         var router = BuildRouter();
