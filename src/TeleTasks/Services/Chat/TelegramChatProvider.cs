@@ -17,10 +17,8 @@ namespace TeleTasks.Services.Chat;
 /// <see cref="IChatProvider.SendHtmlAsync"/>, so this provider just
 /// passes through).
 ///
-/// Wired up by the future <c>ChatHost</c> background service. The current
-/// <c>TelegramBotService</c> still owns its own <c>TelegramBotClient</c>
-/// directly — phase 2 of the multi-provider refactor (see IDEAS.md)
-/// rewires it to delegate through this provider.
+/// Wired up by <c>ChatHost</c>. Lifecycle (connect/disconnect) is owned by
+/// the host; this provider only handles send/receive.
 /// </summary>
 public sealed class TelegramChatProvider : IChatProvider
 {

@@ -11,21 +11,13 @@ namespace TeleTasks.Services;
 /// <summary>
 /// Periodically walks the job registry and pushes new artifacts +
 /// completion summaries to the originating chat. Lives as a free-standing
-/// hosted service (rather than inside <see cref="TelegramBotService"/>) so
-/// that a single process can host multiple <see cref="IChatProvider"/>s
-/// and dispatch each job's pushes to the right one via
-/// <see cref="JobRecord.ChatId"/>.<c>Provider</c>.
+/// hosted service so a single process can host multiple
+/// <see cref="IChatProvider"/>s and dispatch each job's pushes to the
+/// right one via <see cref="JobRecord.ChatId"/>.<c>Provider</c>.
 ///
 /// Lookup is built once at start: <c>provider.Name</c> → instance. A job
 /// whose <c>ChatId.Provider</c> isn't registered gets one warning logged
-/// (deduplicated by provider name) and is then skipped silently — the
-/// most common cause is a saved job from a provider that's been
-/// removed from <c>appsettings</c>, and we don't want every poll tick
-/// to flood the journal.
-///
-/// Built-in 2c.2 as dead code (not registered in DI). Step 2c.3 swaps
-/// the registration over and deletes the equivalent methods inside
-/// <see cref="TelegramBotService"/>.
+/// (deduplicated by provider name) and is then skipped silently.
 /// </summary>
 public sealed class JobNotifierService : BackgroundService
 {
