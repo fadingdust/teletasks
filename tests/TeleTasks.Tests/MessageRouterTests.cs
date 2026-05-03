@@ -171,6 +171,40 @@ public sealed class MessageRouterTests : IDisposable
     }
 
     [Fact]
+    public async Task Results_prompt_attaches_buttons_for_non_text_output_tasks()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"snap","command":"/bin/snap","output":{"type":"Image","path":"/tmp/x.png"}},
+              {"name":"render","command":"/bin/render","output":{"type":"Images","directory":"/tmp"}}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        var keyboard = _chat.SentHtmlsWithKeyboard[0].Keyboard;
+        Assert.NotNull(keyboard);
+        // Only snap and render — ping has Text output, so it's excluded.
+        Assert.Equal(2, keyboard.Count);
+        Assert.Equal("snap",            keyboard[0][0].Label);
+        Assert.Equal("/results snap",   keyboard[0][0].CallbackData);
+        Assert.Equal("render",          keyboard[1][0].Label);
+        Assert.Equal("/results render", keyboard[1][0].CallbackData);
+    }
+
+    [Fact]
+    public async Task Results_prompt_with_only_text_tasks_attaches_no_keyboard()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"ping","command":"/bin/echo"}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
     public async Task Results_followup_with_task_name_evaluates_that_task()
     {
         var router = BuildRouter("""

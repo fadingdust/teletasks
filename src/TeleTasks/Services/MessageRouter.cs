@@ -677,14 +677,29 @@ public sealed class MessageRouter
     private async Task PromptForShowTaskAsync(ChatId chat, CancellationToken cancellationToken)
     {
         _conversation.BeginIntent(chat, TaskIntent.Show);
+
+        // Only tasks with a non-Text output have something /results can show
+        // without re-running. Text-output tasks would just say "no cached
+        // state" — better to keep them off the keyboard.
+        var showable = _registry.Tasks
+            .Where(t => t.Output.Type != TaskOutputType.Text)
+            .ToList();
+
         var sb = new StringBuilder();
-        sb.Append("Which task's results would you like to see? Send the task name, or /cancel.");
-        if (_registry.Tasks.Count > 0)
+        sb.Append("Which task's results would you like to see? Tap one or send the name, or /cancel.");
+
+        IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard = null;
+        if (showable.Count > 0)
         {
-            var sample = string.Join(", ", _registry.Tasks.Take(5).Select(t => $"<code>{HtmlEscape(t.Name)}</code>"));
-            sb.Append("\nSee /tasks for the full list. Examples: ").Append(sample).Append('.');
+            // Callback uses the explicit /results form so a stale tap stays a
+            // Show action regardless of any pending state at the time.
+            var rows = new List<IReadOnlyList<InlineButton>>(showable.Count);
+            foreach (var t in showable)
+                rows.Add(new InlineButton[] { new(t.Name, $"/results {t.Name}") });
+            keyboard = rows;
         }
-        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
+
+        await _provider.SendHtmlAsync(chat, sb.ToString(), keyboard, cancellationToken);
     }
 
     private async Task ResolvePendingIntentAsync(ChatId chat, PendingIntentState state, string answer,
