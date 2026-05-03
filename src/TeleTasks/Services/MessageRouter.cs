@@ -63,10 +63,18 @@ public sealed class MessageRouter
         try
         {
             var pending = _conversation.Get(chat);
+            var pendingIntent = _conversation.GetIntent(chat);
             var isCommand = SlashCommand.IsCommand(text);
-            if (pending is not null && !isCommand)
+
+            if (!isCommand && pending is not null)
             {
                 await ContinueParameterCollectionAsync(chat, pending, text, ct);
+                return;
+            }
+            if (!isCommand && pendingIntent is not null)
+            {
+                _conversation.ClearIntent(chat);
+                await ResolvePendingIntentAsync(chat, pendingIntent, text, ct);
                 return;
             }
             if (isCommand && pending is not null)
@@ -76,6 +84,16 @@ public sealed class MessageRouter
                     $"Cancelled the pending {pending.Task.Name}.",
                     ct);
                 if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase)) return;
+                // Fall through so other slash commands still work.
+            }
+            if (isCommand && pendingIntent is not null)
+            {
+                _conversation.ClearIntent(chat);
+                if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _provider.SendTextAsync(chat, "Cancelled.", ct);
+                    return;
+                }
                 // Fall through so other slash commands still work.
             }
 
@@ -134,6 +152,11 @@ public sealed class MessageRouter
                     // When the model gave us a real task name (not a virtual route) use it directly.
                     if (string.IsNullOrEmpty(requested) && !TaskMatcher.IsVirtualRoute(match.TaskName))
                         requested = match.TaskName;
+                    if (string.IsNullOrWhiteSpace(requested))
+                    {
+                        await PromptForShowTaskAsync(chat, ct);
+                        return;
+                    }
                     await SendResultsAsync(chat, requested, ct);
                     return;
                 }
@@ -269,9 +292,7 @@ public sealed class MessageRouter
     {
         if (string.IsNullOrWhiteSpace(requestedName))
         {
-            await _provider.SendTextAsync(chat,
-                "Usage: /results <task-name>. See /tasks for the list.",
-                cancellationToken);
+            await PromptForShowTaskAsync(chat, cancellationToken);
             return;
         }
 
@@ -648,6 +669,35 @@ public sealed class MessageRouter
 
         var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
         await _dispatcher.DispatchAsync(_provider, chat, result, cancellationToken);
+    }
+
+    private async Task PromptForShowTaskAsync(ChatId chat, CancellationToken cancellationToken)
+    {
+        _conversation.BeginIntent(chat, TaskIntent.Show);
+        var sb = new StringBuilder();
+        sb.Append("Which task's results would you like to see? Send the task name, or /cancel.");
+        if (_registry.Tasks.Count > 0)
+        {
+            var sample = string.Join(", ", _registry.Tasks.Take(5).Select(t => $"<code>{HtmlEscape(t.Name)}</code>"));
+            sb.Append("\nSee /tasks for the full list. Examples: ").Append(sample).Append('.');
+        }
+        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
+    }
+
+    private async Task ResolvePendingIntentAsync(ChatId chat, PendingIntentState state, string answer,
+        CancellationToken cancellationToken)
+    {
+        var trimmed = answer.Trim();
+        switch (state.Intent)
+        {
+            case TaskIntent.Show:
+                await SendResultsAsync(chat, trimmed, cancellationToken);
+                return;
+            default:
+                await _provider.SendTextAsync(chat,
+                    "Lost track of what I was asking. Try again.", cancellationToken);
+                return;
+        }
     }
 
     private async Task HandleIntentStopAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)

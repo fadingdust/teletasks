@@ -162,12 +162,48 @@ public sealed class MessageRouterTests : IDisposable
     }
 
     [Fact]
-    public async Task Results_without_task_name_returns_usage()
+    public async Task Results_without_task_name_prompts_for_task_name()
     {
         var router = BuildRouter();
         await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("Which task", _chat.SentHtmls[0].Html);
+    }
+
+    [Fact]
+    public async Task Results_followup_with_task_name_evaluates_that_task()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"ping","command":"/bin/echo"}]}
+            """);
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+
+        // Reply with the task name — the router resolves the pending Show intent.
+        await router.HandleAsync(FakeChatProvider.Msg(42, "ping"));
+
+        // ping has Text output, so SendResultsAsync explains there's no cached state.
+        // Either way, the bot must mention "ping" — which means the followup landed.
+        var corpus = string.Join(" ",
+            _chat.SentTexts.Select(m => m.Text).Concat(_chat.SentHtmls.Select(m => m.Html)));
+        Assert.Contains("ping", corpus);
+    }
+
+    [Fact]
+    public async Task Results_followup_cancelled_via_slash_cancel()
+    {
+        var router = BuildRouter();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/cancel"));
+
         Assert.Single(_chat.SentTexts);
-        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+        Assert.Contains("Cancelled", _chat.SentTexts[0].Text);
     }
 
     [Fact]
