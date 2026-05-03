@@ -113,40 +113,60 @@ public sealed class MessageRouter
                 match = await _matcher.MatchAsync(routedText, ct);
             }
 
-            if (match is null || string.IsNullOrEmpty(match.TaskName))
+            if (match is null)
             {
-                var reason = match?.Reasoning;
+                await _provider.SendTextAsync(chat,
+                    "I couldn't find a task that matches that. Try /tasks to see what I can do.", ct);
+                return;
+            }
+
+            switch (match.Intent)
+            {
+                case TaskIntent.Help:
+                    await _provider.SendTextAsync(chat,
+                        match.TaskName == TaskMatcher.ShowTasksRoute ? BuildTaskList() : BuildHelp(), ct);
+                    return;
+
+                case TaskIntent.Show:
+                {
+                    var requested = match.Parameters.TryGetValue("task_name", out var tn)
+                        ? tn?.ToString() : null;
+                    // When the model gave us a real task name (not a virtual route) use it directly.
+                    if (string.IsNullOrEmpty(requested) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+                        requested = match.TaskName;
+                    await SendResultsAsync(chat, requested, ct);
+                    return;
+                }
+
+                case TaskIntent.Status:
+                    if (match.TaskName == TaskMatcher.CheckLatestJobRoute)
+                        await SendLatestJobStatusAsync(chat, ct);
+                    else
+                        await SendJobsListAsync(chat, ct);
+                    return;
+
+                case TaskIntent.Stop:
+                    await HandleIntentStopAsync(chat, match, ct);
+                    return;
+
+                case TaskIntent.Restart:
+                    await HandleIntentRestartAsync(chat, match, ct);
+                    return;
+
+                case TaskIntent.Cancel:
+                    _conversation.Clear(chat);
+                    await _provider.SendTextAsync(chat, "Nothing pending to cancel.", ct);
+                    return;
+            }
+
+            // TaskIntent.Run — fall through to task execution.
+            if (string.IsNullOrEmpty(match.TaskName))
+            {
+                var reason = match.Reasoning;
                 var reply = string.IsNullOrWhiteSpace(reason)
                     ? "I couldn't find a task that matches that. Try /tasks to see what I can do."
                     : $"No matching task: {reason}";
                 await _provider.SendTextAsync(chat, reply, ct);
-                return;
-            }
-
-            if (match.TaskName == TaskMatcher.ShowTasksRoute)
-            {
-                await _provider.SendTextAsync(chat, BuildTaskList(), ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowHelpRoute)
-            {
-                await _provider.SendTextAsync(chat, BuildHelp(), ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowResultsRoute)
-            {
-                var requested = match.Parameters.TryGetValue("task_name", out var tn) ? tn?.ToString() : null;
-                await SendResultsAsync(chat, requested, ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowJobsRoute)
-            {
-                await SendJobsListAsync(chat, ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.CheckLatestJobRoute)
-            {
-                await SendLatestJobStatusAsync(chat, ct);
                 return;
             }
 
@@ -416,6 +436,8 @@ public sealed class MessageRouter
         var active = jobs.Where(j => !j.IsFinished).ToList();
         var finished = jobs.Where(j => j.IsFinished).Take(10).ToList();
 
+        var keyboard = new List<IReadOnlyList<InlineButton>>();
+
         if (active.Count > 0)
         {
             sb.AppendLine("<b>Active</b>:");
@@ -424,6 +446,11 @@ public sealed class MessageRouter
                 sb.Append("- /job ").Append(j.Id).Append(" - <code>")
                   .Append(HtmlEscape(j.TaskName)).Append("</code> running ")
                   .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+                keyboard.Add(new InlineButton[]
+                {
+                    new($"Job {j.Id}", $"/job {j.Id}"),
+                    new($"Stop {j.Id}", $"/stop {j.Id}")
+                });
             }
         }
         if (finished.Count > 0)
@@ -437,10 +464,16 @@ public sealed class MessageRouter
                   .Append(HtmlEscape(j.TaskName)).Append("</code> ")
                   .Append(HtmlEscape(exit)).Append(" after ")
                   .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+                keyboard.Add(new InlineButton[]
+                {
+                    new($"Job {j.Id}", $"/job {j.Id}"),
+                    new($"Restart {j.Id}", $"/restart {j.Id}")
+                });
             }
         }
 
-        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
+        await _provider.SendHtmlAsync(chat, sb.ToString(),
+            keyboard.Count > 0 ? keyboard : null, cancellationToken);
     }
 
     private async Task SendLatestJobStatusAsync(ChatId chat, CancellationToken cancellationToken)
@@ -483,7 +516,14 @@ public sealed class MessageRouter
                   .Append(" (pid ").Append(job.Pid).Append(")\n");
         }
         header.Append("log: <code>").Append(HtmlEscape(job.LogPath)).Append("</code>");
-        await _provider.SendHtmlAsync(chat, header.ToString(), cancellationToken);
+
+        IReadOnlyList<IReadOnlyList<InlineButton>>? headerButtons = job.IsFinished
+            ? (job.Task is { Command: { Length: > 0 } }
+                ? new[] { new InlineButton[] { new($"Restart {id}", $"/restart {id}") } }
+                : null)
+            : new[] { new InlineButton[] { new($"Stop {id}", $"/stop {id}") } };
+
+        await _provider.SendHtmlAsync(chat, header.ToString(), headerButtons, cancellationToken);
 
         var tail = _jobs.TailLog(id, 30);
         if (!string.IsNullOrWhiteSpace(tail))
@@ -608,6 +648,71 @@ public sealed class MessageRouter
 
         var result = await _executor.ExecuteAsync(task, collected, cancellationToken);
         await _dispatcher.DispatchAsync(_provider, chat, result, cancellationToken);
+    }
+
+    private async Task HandleIntentStopAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)
+    {
+        _jobs.Refresh();
+        var active = _jobs.List().Where(j => !j.IsFinished).ToList();
+        if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+            active = active.Where(j => j.TaskName == match.TaskName).ToList();
+
+        if (active.Count == 0)
+        {
+            await _provider.SendTextAsync(chat, "No active jobs to stop.", cancellationToken);
+            return;
+        }
+        if (active.Count > 1)
+        {
+            var ids = string.Join(", ", active.Select(j => $"/stop {j.Id}"));
+            await _provider.SendTextAsync(chat,
+                $"Multiple active jobs — use a specific command: {ids}", cancellationToken);
+            return;
+        }
+
+        var job = active[0];
+        var stopped = _jobs.Stop(job.Id);
+        await _provider.SendTextAsync(chat,
+            stopped
+                ? $"Sent kill to job {job.Id} ({job.TaskName}, pid {job.Pid})."
+                : $"Could not stop job {job.Id}. See logs.",
+            cancellationToken);
+    }
+
+    private async Task HandleIntentRestartAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)
+    {
+        _jobs.Refresh();
+        var finished = _jobs.List()
+            .Where(j => j.IsFinished)
+            .OrderByDescending(j => j.StartedAtUtc)
+            .ToList();
+        if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+            finished = finished.Where(j => j.TaskName == match.TaskName).ToList();
+
+        var latest = finished.FirstOrDefault();
+        if (latest is null)
+        {
+            await _provider.SendTextAsync(chat, "No finished jobs to restart.", cancellationToken);
+            return;
+        }
+        if (latest.Task is null || string.IsNullOrWhiteSpace(latest.Task.Command))
+        {
+            await _provider.SendTextAsync(chat,
+                $"Job {latest.Id} has no stored task definition and cannot be restarted.",
+                cancellationToken);
+            return;
+        }
+
+        var newJob = _jobs.Restart(latest.Id);
+        if (newJob is null)
+        {
+            await _provider.SendTextAsync(chat, $"Could not restart job {latest.Id}.", cancellationToken);
+            return;
+        }
+        _jobs.AssignChat(newJob.Id, chat);
+        await _provider.SendHtmlAsync(chat,
+            $"-> Restarted job {latest.Id} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
+            cancellationToken);
     }
 
     private static string FormatParameterList(IReadOnlyDictionary<string, object?> parameters)

@@ -58,6 +58,16 @@ public interface IChatProvider
     /// </summary>
     Task SendHtmlAsync(ChatId chat, string html, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Send an HTML message with an optional inline keyboard. Each inner list is one
+    /// button row; buttons in a row appear side-by-side. Tapping a button fires a
+    /// synthetic message whose text equals <see cref="InlineButton.CallbackData"/>,
+    /// so the routing pipeline handles it identically to a typed command.
+    /// Providers that don't support keyboards fall back to plain HTML.
+    /// </summary>
+    Task SendHtmlAsync(ChatId chat, string html, IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard,
+        CancellationToken cancellationToken) => SendHtmlAsync(chat, html, cancellationToken);
+
     Task SendImageAsync(ChatId chat, string path, string? caption, CancellationToken cancellationToken);
 
     Task SendDocumentAsync(ChatId chat, string path, string? caption, CancellationToken cancellationToken);

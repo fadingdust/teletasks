@@ -287,6 +287,42 @@ public sealed class MessageRouterTests : IDisposable
         Assert.Empty(_chat.SentHtmls);
     }
 
+    // ─── Inline keyboard buttons ───────────────────────────────────────
+
+    [Fact]
+    public async Task Jobs_with_no_jobs_sends_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/jobs"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
+    public async Task Job_status_for_unknown_id_sends_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/job 99"));
+        // Falls back to SendTextAsync — no html at all.
+        Assert.Empty(_chat.SentHtmlsWithKeyboard);
+    }
+
+    // ─── TaskMatcher static helpers ────────────────────────────────────
+
+    [Theory]
+    [InlineData("_show_tasks",       true)]
+    [InlineData("_show_help",        true)]
+    [InlineData("_show_results",     true)]
+    [InlineData("_show_jobs",        true)]
+    [InlineData("_check_latest_job", true)]
+    [InlineData("render",            false)]
+    [InlineData("",                  false)]
+    [InlineData(null,                false)]
+    public void IsVirtualRoute_identifies_virtual_routes(string? name, bool expected)
+    {
+        Assert.Equal(expected, TaskMatcher.IsVirtualRoute(name));
+    }
+
     // ─── Private test helpers ──────────────────────────────────────────
 
     private sealed class TestEnv : IHostEnvironment

@@ -20,6 +20,7 @@ public sealed class FakeChatProvider : IChatProvider
 
     public List<(ChatId Chat, string Text)> SentTexts { get; } = new();
     public List<(ChatId Chat, string Html)> SentHtmls { get; } = new();
+    public List<(ChatId Chat, string Html, IReadOnlyList<IReadOnlyList<InlineButton>>? Keyboard)> SentHtmlsWithKeyboard { get; } = new();
     public List<(ChatId Chat, string Path, string? Caption)> SentImages { get; } = new();
     public List<(ChatId Chat, string Path, string? Caption)> SentDocuments { get; } = new();
     public List<ChatId> TypingIndicators { get; } = new();
@@ -36,6 +37,15 @@ public sealed class FakeChatProvider : IChatProvider
     public Task SendHtmlAsync(ChatId chat, string html, CancellationToken ct)
     {
         SentHtmls.Add((chat, html));
+        SentHtmlsWithKeyboard.Add((chat, html, null));
+        return Task.CompletedTask;
+    }
+
+    public Task SendHtmlAsync(ChatId chat, string html,
+        IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard, CancellationToken ct)
+    {
+        SentHtmls.Add((chat, html));
+        SentHtmlsWithKeyboard.Add((chat, html, keyboard));
         return Task.CompletedTask;
     }
 
