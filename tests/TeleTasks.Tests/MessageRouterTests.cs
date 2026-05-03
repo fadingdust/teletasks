@@ -83,8 +83,8 @@ public sealed class MessageRouterTests : IDisposable
     {
         var router = BuildRouter();
         await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
-        Assert.Single(_chat.SentTexts);
-        Assert.Contains("No tasks configured", _chat.SentTexts[0].Text);
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("No tasks configured", _chat.SentHtmls[0].Html);
     }
 
     [Fact]
@@ -94,8 +94,8 @@ public sealed class MessageRouterTests : IDisposable
             {"tasks":[{"name":"ping","command":"/bin/echo","args":["pong"]}]}
             """);
         await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
-        Assert.Single(_chat.SentTexts);
-        Assert.Contains("ping", _chat.SentTexts[0].Text);
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("ping", _chat.SentHtmls[0].Html);
     }
 
     [Fact]
@@ -354,11 +354,41 @@ public sealed class MessageRouterTests : IDisposable
             ]}
             """);
         await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
-        Assert.Single(_chat.SentTexts);
-        var text = _chat.SentTexts[0].Text;
+        Assert.Single(_chat.SentHtmls);
+        var html = _chat.SentHtmls[0].Html;
 
-        Assert.Contains("ping [Run]", text);
-        Assert.Contains("render [Run · Show · Status · Stop · Restart]", text);
+        Assert.Contains("<code>ping</code> [Run]", html);
+        Assert.Contains("<code>render</code> [Run · Show · Status · Stop · Restart]", html);
+    }
+
+    [Fact]
+    public async Task Tasks_converts_backticks_in_descriptions_to_code_tags()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"sh_run","command":"/bin/bash","args":["run.sh"],
+                       "description":"Run `run.sh`."}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentHtmls);
+        var html = _chat.SentHtmls[0].Html;
+        Assert.Contains("Run <code>run.sh</code>.", html);
+        Assert.DoesNotContain("`run.sh`", html);
+    }
+
+    [Fact]
+    public void FormatDescription_escapes_html_before_converting_backticks()
+    {
+        // <foo> inside backticks must end up as &lt;foo&gt; inside <code>,
+        // not as literal HTML tags that Telegram would try to parse.
+        var actual = MessageRouter.FormatDescription("see `<foo>` for more");
+        Assert.Equal("see <code>&lt;foo&gt;</code> for more", actual);
+    }
+
+    [Fact]
+    public void FormatDescription_passes_text_without_backticks_through_escaped()
+    {
+        Assert.Equal("a &amp; b &lt; c",
+            MessageRouter.FormatDescription("a & b < c"));
     }
 
     [Fact]

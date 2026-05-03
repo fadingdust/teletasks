@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using TeleTasks.Models;
 using TeleTasks.Services.Chat;
@@ -141,8 +142,10 @@ public sealed class MessageRouter
             switch (match.Intent)
             {
                 case TaskIntent.Help:
-                    await _provider.SendTextAsync(chat,
-                        match.TaskName == TaskMatcher.ShowTasksRoute ? BuildTaskList() : BuildHelp(), ct);
+                    if (match.TaskName == TaskMatcher.ShowTasksRoute)
+                        await _provider.SendHtmlAsync(chat, BuildTaskList(), ct);
+                    else
+                        await _provider.SendTextAsync(chat, BuildHelp(), ct);
                     return;
 
                 case TaskIntent.Show:
@@ -247,7 +250,7 @@ public sealed class MessageRouter
                 await _provider.SendTextAsync(chat, BuildHelp(), cancellationToken);
                 break;
             case "/tasks":
-                await _provider.SendTextAsync(chat, BuildTaskList(), cancellationToken);
+                await _provider.SendHtmlAsync(chat, BuildTaskList(), cancellationToken);
                 break;
             case "/reload":
                 _registry.Load();
@@ -830,20 +833,26 @@ public sealed class MessageRouter
         "If a task needs values you didn't supply, I'll ask for them one at a time.\n" +
         "Anything else is sent to the local LLM for matching.";
 
+    /// <summary>
+    /// Renders the /tasks list as Telegram HTML. Task names are wrapped in
+    /// <c>&lt;code&gt;</c> for monospace; backtick-quoted spans inside
+    /// descriptions (e.g. "Run `run.sh`") are converted to <c>&lt;code&gt;</c>
+    /// after HTML-escaping the rest of the description text.
+    /// </summary>
     private string BuildTaskList()
     {
         if (_registry.Tasks.Count == 0 && _registry.DisabledTasks.Count == 0)
             return "No tasks configured.";
 
         var sb = new StringBuilder();
-        sb.AppendLine("Available tasks:");
+        sb.AppendLine("<b>Available tasks</b>:");
         foreach (var t in _registry.Tasks)
         {
-            sb.Append("- ").Append(t.Name);
+            sb.Append("- <code>").Append(HtmlEscape(t.Name)).Append("</code>");
             sb.Append(" [").Append(string.Join(" · ", IntentsFor(t))).Append(']');
             if (!string.IsNullOrWhiteSpace(t.Description))
             {
-                sb.Append(" - ").Append(t.Description);
+                sb.Append(" - ").Append(FormatDescription(t.Description));
             }
             sb.AppendLine();
         }
@@ -851,14 +860,25 @@ public sealed class MessageRouter
         if (_registry.DisabledTasks.Count > 0)
         {
             sb.AppendLine();
-            sb.Append("Disabled (").Append(_registry.DisabledTasks.Count).AppendLine("):");
+            sb.Append("<b>Disabled</b> (").Append(_registry.DisabledTasks.Count).AppendLine("):");
             foreach (var t in _registry.DisabledTasks)
             {
-                sb.Append("- ").Append(t.Name).AppendLine();
+                sb.Append("- <code>").Append(HtmlEscape(t.Name)).AppendLine("</code>");
             }
         }
         return sb.ToString();
     }
+
+    private static readonly Regex BacktickSpan = new(@"`([^`]+)`", RegexOptions.Compiled);
+
+    /// <summary>
+    /// HTML-escapes the description, then converts backtick-quoted spans
+    /// (Markdown-style inline code) to <c>&lt;code&gt;</c>. Order matters —
+    /// escape first, otherwise <c>&lt;</c>/<c>&gt;</c> inside backticks would
+    /// be passed through as live HTML.
+    /// </summary>
+    internal static string FormatDescription(string description) =>
+        BacktickSpan.Replace(HtmlEscape(description), "<code>$1</code>");
 
     /// <summary>
     /// Per-task intents inferred from the task's shape:
