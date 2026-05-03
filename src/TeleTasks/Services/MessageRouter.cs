@@ -271,6 +271,9 @@ public sealed class MessageRouter
             case "/job":
                 await HandleJobCommandAsync(chat, text, cancellationToken);
                 break;
+            case "/task":
+                await HandleTaskDetailCommandAsync(chat, text, cancellationToken);
+                break;
             case "/stop":
                 await HandleStopCommandAsync(chat, text, cancellationToken);
                 break;
@@ -355,12 +358,104 @@ public sealed class MessageRouter
         await SendJobStatusAsync(chat, id, cancellationToken);
     }
 
+    private async Task HandleTaskDetailCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+        {
+            await _provider.SendTextAsync(chat,
+                "Usage: /task <name>. See /tasks for the list.", cancellationToken);
+            return;
+        }
+        var name = parts[1].Trim();
+
+        var task = _registry.Find(name);
+        if (task is null)
+        {
+            var disabled = _registry.DisabledTasks.FirstOrDefault(t =>
+                string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+            var hint = disabled is not null ? " (disabled — flip enabled:true to use)" : "";
+            await _provider.SendHtmlAsync(chat,
+                $"No task named <code>{HtmlEscape(name)}</code>{hint}.",
+                cancellationToken);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("<b>").Append(HtmlEscape(task.Name)).AppendLine("</b>");
+        if (!string.IsNullOrWhiteSpace(task.Description))
+        {
+            sb.AppendLine(FormatDescription(task.Description));
+        }
+        sb.Append("Output: <code>").Append(task.Output.Type).Append("</code>");
+        if (task.IsLongRunning) sb.Append(" · long-running");
+        sb.AppendLine();
+
+        if (task.Parameters.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Parameters:");
+            foreach (var p in task.Parameters)
+            {
+                sb.Append("- <code>").Append(HtmlEscape(p.Name)).Append("</code> ")
+                  .Append('(').Append(HtmlEscape(p.Type))
+                  .Append(p.Required ? ", required" : ", optional").Append(')');
+                if (!string.IsNullOrWhiteSpace(p.Description))
+                {
+                    sb.Append(": ").Append(FormatDescription(p.Description));
+                }
+                sb.AppendLine();
+            }
+        }
+
+        await _provider.SendHtmlAsync(chat, sb.ToString(),
+            BuildTaskDetailKeyboard(task), cancellationToken);
+    }
+
+    /// <summary>
+    /// Per-task action keyboard for the /task drill-down view. One button per
+    /// applicable intent (see <see cref="IntentsFor"/>); each callback is the
+    /// equivalent slash command so taps go through the same dispatch as a
+    /// typed command — including the int-or-name forks on /stop and /restart.
+    /// </summary>
+    private static IReadOnlyList<IReadOnlyList<InlineButton>> BuildTaskDetailKeyboard(TaskDefinition task)
+    {
+        var rows = new List<IReadOnlyList<InlineButton>>();
+        foreach (var intent in IntentsFor(task))
+        {
+            var (label, callback) = intent switch
+            {
+                TaskIntent.Run     => ($"Run {task.Name}",     task.Name),
+                TaskIntent.Show    => ($"Show {task.Name}",    $"/results {task.Name}"),
+                TaskIntent.Status  => ($"Jobs",                "/jobs"),
+                TaskIntent.Stop    => ($"Stop {task.Name}",    $"/stop {task.Name}"),
+                TaskIntent.Restart => ($"Restart {task.Name}", $"/restart {task.Name}"),
+                _ => (string.Empty, string.Empty)
+            };
+            if (label.Length > 0) rows.Add(new InlineButton[] { new(label, callback) });
+        }
+        return rows;
+    }
+
     private async Task HandleStopCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
     {
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        if (parts.Length < 2)
         {
-            await _provider.SendTextAsync(chat, "Usage: /stop <job-id>. See /jobs for IDs.", cancellationToken);
+            await _provider.SendTextAsync(chat,
+                "Usage: /stop <job-id> or /stop <task-name>. See /jobs for IDs.", cancellationToken);
+            return;
+        }
+
+        var arg = parts[1].Trim();
+
+        // Numeric arg → stop by job ID. Anything else falls back to looking up
+        // the active job for that task name (same lookup the NL Stop intent uses).
+        if (!int.TryParse(arg, out var id))
+        {
+            await HandleIntentStopAsync(chat,
+                new TaskMatch(arg, new Dictionary<string, object?>(), null),
+                cancellationToken);
             return;
         }
 
@@ -387,9 +482,23 @@ public sealed class MessageRouter
     private async Task HandleRestartCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
     {
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        if (parts.Length < 2)
         {
-            await _provider.SendTextAsync(chat, "Usage: /restart <job-id>. See /jobs for IDs.", cancellationToken);
+            await _provider.SendTextAsync(chat,
+                "Usage: /restart <job-id> or /restart <task-name>. See /jobs for IDs.", cancellationToken);
+            return;
+        }
+
+        var arg = parts[1].Trim();
+
+        // Same int-or-task-name fork as /stop: numeric arg restarts a specific
+        // job; anything else asks the intent helper to find the latest finished
+        // job for that task name.
+        if (!int.TryParse(arg, out var id))
+        {
+            await HandleIntentRestartAsync(chat,
+                new TaskMatch(arg, new Dictionary<string, object?>(), null),
+                cancellationToken);
             return;
         }
 
@@ -832,19 +941,20 @@ public sealed class MessageRouter
     private static string BuildHelp() =>
         "TeleTasks - chat in natural language to run pre-defined tasks.\n\n" +
         "Commands:\n" +
-        "  /tasks          - list configured (and disabled) tasks\n" +
-        "  /reload         - reload tasks.json\n" +
-        "  /dry <text>     - resolve a task and show what would run, without running it\n" +
-        "  /results <task> - show the latest output of <task> without running it\n" +
-        "  /jobs           - list active and recent long-running jobs\n" +
-        "  /job N          - status, log tail, and current output for job N\n" +
-        "  /stop N         - kill a running job\n" +
-        "  /restart N      - re-run a finished job with the same parameters\n" +
-        "  /clearjobs      - prune finished jobs per retention policy\n" +
-        "  /clearjobs all  - wipe all finished jobs (running jobs always kept)\n" +
-        "  /cancel         - abort a pending parameter-collection prompt\n" +
-        "  /whoami         - show your user/chat IDs\n" +
-        "  /help           - this message\n\n" +
+        "  /tasks                    - list tasks (with action buttons)\n" +
+        "  /task <name>              - per-task detail with Run / Show / Stop / Restart buttons\n" +
+        "  /reload                   - reload tasks.json\n" +
+        "  /dry <text>               - resolve a task and show what would run, without running it\n" +
+        "  /results <task>           - show the latest output of <task> without running it\n" +
+        "  /jobs                     - list active and recent long-running jobs\n" +
+        "  /job N                    - status, log tail, and current output for job N\n" +
+        "  /stop <id|name>           - kill a running job (by id or by task name)\n" +
+        "  /restart <id|name>        - re-run a finished job (by id or by task name)\n" +
+        "  /clearjobs                - prune finished jobs per retention policy\n" +
+        "  /clearjobs all            - wipe all finished jobs (running jobs always kept)\n" +
+        "  /cancel                   - abort a pending parameter-collection prompt\n" +
+        "  /whoami                   - show your user/chat IDs\n" +
+        "  /help                     - this message\n\n" +
         "If a task needs values you didn't supply, I'll ask for them one at a time.\n" +
         "Anything else is sent to the local LLM for matching.";
 
@@ -885,10 +995,11 @@ public sealed class MessageRouter
     }
 
     /// <summary>
-    /// One button per enabled task, callback = the task name. Tapping fires
-    /// the task-name fast path which runs the task (or starts conversational
-    /// parameter collection if anything required is missing). Stage 2 will
-    /// add a drill-down view exposing Show / Stop / Restart per task.
+    /// Each enabled task gets a row of two buttons: the task name (callback =
+    /// task name → fast-path Run, with conversational parameter collection
+    /// if anything required is missing), and a "More" button that fires
+    /// /task &lt;name&gt; for the per-task drill-down with Show / Stop /
+    /// Restart actions.
     /// </summary>
     private IReadOnlyList<IReadOnlyList<InlineButton>>? BuildTaskKeyboard()
     {
@@ -896,7 +1007,11 @@ public sealed class MessageRouter
         var rows = new List<IReadOnlyList<InlineButton>>(_registry.Tasks.Count);
         foreach (var t in _registry.Tasks)
         {
-            rows.Add(new InlineButton[] { new(t.Name, t.Name) });
+            rows.Add(new InlineButton[]
+            {
+                new(t.Name,  t.Name),
+                new("More",  $"/task {t.Name}")
+            });
         }
         return rows;
     }
