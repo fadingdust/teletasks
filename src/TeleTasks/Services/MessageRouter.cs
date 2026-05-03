@@ -143,7 +143,7 @@ public sealed class MessageRouter
             {
                 case TaskIntent.Help:
                     if (match.TaskName == TaskMatcher.ShowTasksRoute)
-                        await _provider.SendHtmlAsync(chat, BuildTaskList(), ct);
+                        await _provider.SendHtmlAsync(chat, BuildTaskList(), BuildTaskKeyboard(), ct);
                     else
                         await _provider.SendTextAsync(chat, BuildHelp(), ct);
                     return;
@@ -250,7 +250,7 @@ public sealed class MessageRouter
                 await _provider.SendTextAsync(chat, BuildHelp(), cancellationToken);
                 break;
             case "/tasks":
-                await _provider.SendHtmlAsync(chat, BuildTaskList(), cancellationToken);
+                await _provider.SendHtmlAsync(chat, BuildTaskList(), BuildTaskKeyboard(), cancellationToken);
                 break;
             case "/reload":
                 _registry.Load();
@@ -867,6 +867,23 @@ public sealed class MessageRouter
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// One button per enabled task, callback = the task name. Tapping fires
+    /// the task-name fast path which runs the task (or starts conversational
+    /// parameter collection if anything required is missing). Stage 2 will
+    /// add a drill-down view exposing Show / Stop / Restart per task.
+    /// </summary>
+    private IReadOnlyList<IReadOnlyList<InlineButton>>? BuildTaskKeyboard()
+    {
+        if (_registry.Tasks.Count == 0) return null;
+        var rows = new List<IReadOnlyList<InlineButton>>(_registry.Tasks.Count);
+        foreach (var t in _registry.Tasks)
+        {
+            rows.Add(new InlineButton[] { new(t.Name, t.Name) });
+        }
+        return rows;
     }
 
     private static readonly Regex BacktickSpan = new(@"`([^`]+)`", RegexOptions.Compiled);

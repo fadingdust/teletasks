@@ -344,6 +344,36 @@ public sealed class MessageRouterTests : IDisposable
     }
 
     [Fact]
+    public async Task Tasks_attaches_one_button_per_task_with_callback_equal_to_task_name()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"render","command":"/bin/render","longRunning":true}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        var keyboard = _chat.SentHtmlsWithKeyboard[0].Keyboard;
+        Assert.NotNull(keyboard);
+        Assert.Equal(2, keyboard.Count);
+        Assert.Equal("ping",   keyboard[0][0].Label);
+        Assert.Equal("ping",   keyboard[0][0].CallbackData);
+        Assert.Equal("render", keyboard[1][0].Label);
+        Assert.Equal("render", keyboard[1][0].CallbackData);
+    }
+
+    [Fact]
+    public async Task Tasks_with_empty_registry_attaches_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
     public async Task Tasks_renders_intent_badges_per_row()
     {
         var router = BuildRouter("""
