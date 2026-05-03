@@ -840,6 +840,7 @@ public sealed class MessageRouter
         foreach (var t in _registry.Tasks)
         {
             sb.Append("- ").Append(t.Name);
+            sb.Append(" [").Append(string.Join(" · ", IntentsFor(t))).Append(']');
             if (!string.IsNullOrWhiteSpace(t.Description))
             {
                 sb.Append(" - ").Append(t.Description);
@@ -857,6 +858,28 @@ public sealed class MessageRouter
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Per-task intents inferred from the task's shape:
+    ///   Run       — always (any enabled task can be executed)
+    ///   Show      — when the task produces a non-Text artifact (file / images / log tail)
+    ///   Status    — long-running only (only those become tracked jobs)
+    ///   Stop      — long-running only (you can only kill what's tracked)
+    ///   Restart   — long-running only (JobTracker only persists long-running runs)
+    /// Cancel and Help are not task-scoped, so they never appear here.
+    /// </summary>
+    internal static IReadOnlyList<TaskIntent> IntentsFor(TaskDefinition task)
+    {
+        var intents = new List<TaskIntent> { TaskIntent.Run };
+        if (task.Output.Type != TaskOutputType.Text) intents.Add(TaskIntent.Show);
+        if (task.IsLongRunning)
+        {
+            intents.Add(TaskIntent.Status);
+            intents.Add(TaskIntent.Stop);
+            intents.Add(TaskIntent.Restart);
+        }
+        return intents;
     }
 
     internal static string HtmlEscape(string input) =>

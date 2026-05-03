@@ -343,6 +343,49 @@ public sealed class MessageRouterTests : IDisposable
         Assert.Empty(_chat.SentHtmlsWithKeyboard);
     }
 
+    [Fact]
+    public async Task Tasks_renders_intent_badges_per_row()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"render","command":"/bin/render","longRunning":true,
+                "output":{"type":"Images","directory":"/tmp"}}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentTexts);
+        var text = _chat.SentTexts[0].Text;
+
+        Assert.Contains("ping [Run]", text);
+        Assert.Contains("render [Run · Show · Status · Stop · Restart]", text);
+    }
+
+    [Fact]
+    public void IntentsFor_text_output_short_running_is_Run_only()
+    {
+        var task = new TaskDefinition { Name = "ping" };
+        Assert.Equal(new[] { TaskIntent.Run }, MessageRouter.IntentsFor(task));
+    }
+
+    [Fact]
+    public void IntentsFor_image_output_short_running_adds_Show()
+    {
+        var task = new TaskDefinition { Name = "snap" };
+        task.Output.Type = TaskOutputType.Image;
+        Assert.Equal(new[] { TaskIntent.Run, TaskIntent.Show }, MessageRouter.IntentsFor(task));
+    }
+
+    [Fact]
+    public void IntentsFor_long_running_adds_Status_Stop_Restart()
+    {
+        var task = new TaskDefinition { Name = "render", LongRunning = true };
+        task.Output.Type = TaskOutputType.Images;
+        Assert.Equal(
+            new[] { TaskIntent.Run, TaskIntent.Show, TaskIntent.Status, TaskIntent.Stop, TaskIntent.Restart },
+            MessageRouter.IntentsFor(task));
+    }
+
     // ─── TaskMatcher static helpers ────────────────────────────────────
 
     [Theory]
