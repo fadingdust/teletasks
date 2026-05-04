@@ -511,9 +511,7 @@ public sealed class MessageRouter
             return;
         }
         _jobs.AssignChat(newJob.Id, chat);
-        await _provider.SendHtmlAsync(chat,
-            $"-> Restarted job {id} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
-            cancellationToken);
+        await SendRestartConfirmationAsync(chat, id, newJob, cancellationToken);
     }
 
     private async Task HandleClearJobsCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
@@ -939,9 +937,29 @@ public sealed class MessageRouter
             return;
         }
         _jobs.AssignChat(newJob.Id, chat);
+        await SendRestartConfirmationAsync(chat, latest.Id, newJob, cancellationToken);
+    }
+
+    /// <summary>
+    /// Restart confirmation: identical wording for the slash and NL paths,
+    /// with [Job M] [Stop M] buttons on the new job so the user can tap
+    /// straight into the log tail / current output (or kill it if it was
+    /// the wrong button).
+    /// </summary>
+    private async Task SendRestartConfirmationAsync(ChatId chat, int oldId, JobRecord newJob,
+        CancellationToken cancellationToken)
+    {
+        var keyboard = new[]
+        {
+            new[]
+            {
+                new InlineButton($"Job {newJob.Id}",  $"/job {newJob.Id}"),
+                new InlineButton($"Stop {newJob.Id}", $"/stop {newJob.Id}")
+            }
+        };
         await _provider.SendHtmlAsync(chat,
-            $"-> Restarted job {latest.Id} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
-            cancellationToken);
+            $"-> Restarted job {oldId} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
+            keyboard, cancellationToken);
     }
 
     private static string FormatParameterList(IReadOnlyDictionary<string, object?> parameters)
