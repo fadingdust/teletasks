@@ -182,11 +182,45 @@ JSON-Schema-constrained output.
 ### Built-in commands
 
 - `/help`, `/start`, `/tasks`, `/reload`, `/whoami`
+- `/run <name>` — run a task by name (the slash form behind every Run button)
+- `/task <name>` — per-task drill-down: title, description, output type,
+  long-running flag, parameter list, plus `[Run] [Show] [Stop] [Restart]`
+  buttons scoped to that task
 - `/dry <text>` — resolve a task and show what would run, without running
 - `/results <task>` — show the latest output of a task without re-running
-- `/jobs`, `/job <N>`, `/stop <N>`, `/restart <N>` — long-running job management
+  (bare `/results` opens a tap-picker prompt)
+- `/jobs`, `/job <N>` — long-running job listing + per-job status with
+  `[Stop N]` / `[Restart N]` buttons
+- `/stop <id|name>`, `/restart <id|name>` — accept either a numeric job id
+  or a task name (which resolves to the latest active/finished job for
+  that task)
 - `/clearjobs` / `/clearjobs all` — prune finished jobs (policy / full wipe)
-- `/cancel` — abort a pending parameter-collection prompt
+- `/cancel` — abort a pending parameter-collection or intent-followup prompt
+
+### Intent routing & inline keyboard buttons
+
+- **Intent-aware matcher**: the response schema carries an `intent` enum
+  (`Run`, `Show`, `Status`, `Stop`, `Restart`, `Cancel`, `Help`) alongside
+  the chosen `task`. `MessageRouter.HandleAsync` switches on the intent
+  rather than comparing task names; the legacy virtual-route names
+  (`_show_results`, `_show_jobs`, etc.) survive as aliases so old model
+  responses keep working without a redeploy.
+- **Per-task action set** (`IntentsFor`): Run always; Show when output
+  type ≠ Text; Status / Stop / Restart for long-running tasks. Surfaced
+  as text badges in `/tasks` and as the button grid in `/task <name>`.
+- **Telegram inline keyboards**: `/tasks` row = `[<name>] [More]`,
+  `/task <name>` = one button per applicable intent, `/jobs` row =
+  `[Job N] [Stop N|Restart N]`, `/job N` header carries the same,
+  `/results` task-picker lists every non-Text-output task as a button,
+  long-running start message and completion summary both ship
+  `[Job N]` and `[Stop N]` / `[Restart N]`. Every callback is the
+  equivalent slash-command string, so taps and typed commands hit the
+  same dispatch path.
+- **Pending-intent followups**: when an intent matches but a required
+  argument is missing (today: Show with no task name), the bot asks
+  "which task?" and resolves the next non-command message via the
+  intent-specific handler. State expires with the same 15-min idle
+  window as parameter collection; `/cancel` clears it.
 
 ---
 

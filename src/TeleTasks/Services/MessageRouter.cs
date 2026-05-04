@@ -92,7 +92,8 @@ public sealed class MessageRouter
                 _conversation.ClearIntent(chat);
                 if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
                 {
-                    await _provider.SendTextAsync(chat, "Cancelled.", ct);
+                    await _provider.SendTextAsync(chat,
+                        $"Cancelled the pending {pendingIntent.Intent} prompt.", ct);
                     return;
                 }
                 // Fall through so other slash commands still work.
@@ -204,30 +205,7 @@ public sealed class MessageRouter
                 return;
             }
 
-            var missingRequired = task.Parameters
-                .Where(p => p.Required && !MissingValueGuard.HasUsableValue(p, match.Parameters, routedText, task.Name))
-                .ToList();
-            if (missingRequired.Count > 0)
-            {
-                var state = _conversation.Begin(chat, task, match.Parameters, missingRequired);
-                await _provider.SendHtmlAsync(chat,
-                    $"-> <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
-                    "Send each one in turn, or /cancel to abort.",
-                    ct);
-                await PromptNextParameterAsync(chat, state, ct);
-                return;
-            }
-
-            await _provider.SendHtmlAsync(chat,
-                $"-> Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(match.Parameters))}",
-                ct);
-
-            var result = await _executor.ExecuteAsync(task, match.Parameters, ct);
-            if (result.JobId is int newJobId)
-            {
-                _jobs.AssignChat(newJobId, chat);
-            }
-            await _dispatcher.DispatchAsync(_provider, chat, result, ct);
+            await ExecuteRunAsync(chat, task, match.Parameters, routedText, ct);
         }
         catch (Exception ex)
         {
@@ -273,6 +251,9 @@ public sealed class MessageRouter
                 break;
             case "/task":
                 await HandleTaskDetailCommandAsync(chat, text, cancellationToken);
+                break;
+            case "/run":
+                await HandleRunCommandAsync(chat, text, cancellationToken);
                 break;
             case "/stop":
                 await HandleStopCommandAsync(chat, text, cancellationToken);
@@ -425,7 +406,7 @@ public sealed class MessageRouter
         {
             var (label, callback) = intent switch
             {
-                TaskIntent.Run     => ($"Run {task.Name}",     task.Name),
+                TaskIntent.Run     => ($"Run {task.Name}",     $"/run {task.Name}"),
                 TaskIntent.Show    => ($"Show {task.Name}",    $"/results {task.Name}"),
                 TaskIntent.Status  => ($"Jobs",                "/jobs"),
                 TaskIntent.Stop    => ($"Stop {task.Name}",    $"/stop {task.Name}"),
@@ -827,12 +808,79 @@ public sealed class MessageRouter
         }
     }
 
+    /// <summary>
+    /// Final stage of TaskIntent.Run dispatch: validates required parameters
+    /// (kicking off conversational collection if anything's missing), runs
+    /// the task, and dispatches the result. Shared by the NL Run path and
+    /// the /run slash command (and by extension the per-task Run buttons,
+    /// whose callback is /run &lt;name&gt;).
+    /// </summary>
+    private async Task ExecuteRunAsync(ChatId chat, TaskDefinition task,
+        IReadOnlyDictionary<string, object?> parameters, string originalMessage,
+        CancellationToken cancellationToken)
+    {
+        var missingRequired = task.Parameters
+            .Where(p => p.Required &&
+                        !MissingValueGuard.HasUsableValue(p, parameters, originalMessage, task.Name))
+            .ToList();
+        if (missingRequired.Count > 0)
+        {
+            var state = _conversation.Begin(chat, task, parameters, missingRequired);
+            await _provider.SendHtmlAsync(chat,
+                $"-> <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
+                "Send each one in turn, or /cancel to abort.",
+                cancellationToken);
+            await PromptNextParameterAsync(chat, state, cancellationToken);
+            return;
+        }
+
+        await _provider.SendHtmlAsync(chat,
+            $"-> Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(parameters))}",
+            cancellationToken);
+
+        var result = await _executor.ExecuteAsync(task, parameters, cancellationToken);
+        if (result.JobId is int newJobId)
+        {
+            _jobs.AssignChat(newJobId, chat);
+        }
+        await _dispatcher.DispatchAsync(_provider, chat, result, cancellationToken);
+    }
+
+    private async Task HandleRunCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var space = text.IndexOf(' ');
+        var arg = space < 0 ? null : text[(space + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            await _provider.SendTextAsync(chat,
+                "Usage: /run <task-name>. See /tasks for the list.", cancellationToken);
+            return;
+        }
+
+        var task = _registry.Find(arg);
+        if (task is null)
+        {
+            await _provider.SendHtmlAsync(chat,
+                $"No task named <code>{HtmlEscape(arg)}</code>.",
+                cancellationToken);
+            return;
+        }
+
+        await ExecuteRunAsync(chat, task, new Dictionary<string, object?>(), arg, cancellationToken);
+    }
+
     private async Task HandleIntentStopAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)
     {
         _jobs.Refresh();
         var active = _jobs.List().Where(j => !j.IsFinished).ToList();
         if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
-            active = active.Where(j => j.TaskName == match.TaskName).ToList();
+        {
+            // Case-insensitive on task name to match _registry.Find lookup semantics —
+            // /stop Render and /stop render should reach the same active job.
+            active = active
+                .Where(j => string.Equals(j.TaskName, match.TaskName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
         if (active.Count == 0)
         {
@@ -864,7 +912,11 @@ public sealed class MessageRouter
             .OrderByDescending(j => j.StartedAtUtc)
             .ToList();
         if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
-            finished = finished.Where(j => j.TaskName == match.TaskName).ToList();
+        {
+            finished = finished
+                .Where(j => string.Equals(j.TaskName, match.TaskName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
         var latest = finished.FirstOrDefault();
         if (latest is null)
@@ -943,6 +995,7 @@ public sealed class MessageRouter
         "Commands:\n" +
         "  /tasks                    - list tasks (with action buttons)\n" +
         "  /task <name>              - per-task detail with Run / Show / Stop / Restart buttons\n" +
+        "  /run <name>               - run a task by name\n" +
         "  /reload                   - reload tasks.json\n" +
         "  /dry <text>               - resolve a task and show what would run, without running it\n" +
         "  /results <task>           - show the latest output of <task> without running it\n" +
@@ -952,9 +1005,10 @@ public sealed class MessageRouter
         "  /restart <id|name>        - re-run a finished job (by id or by task name)\n" +
         "  /clearjobs                - prune finished jobs per retention policy\n" +
         "  /clearjobs all            - wipe all finished jobs (running jobs always kept)\n" +
-        "  /cancel                   - abort a pending parameter-collection prompt\n" +
+        "  /cancel                   - abort a pending prompt\n" +
         "  /whoami                   - show your user/chat IDs\n" +
         "  /help                     - this message\n\n" +
+        "Most lists include tap-to-act buttons - use them instead of typing the slash form.\n" +
         "If a task needs values you didn't supply, I'll ask for them one at a time.\n" +
         "Anything else is sent to the local LLM for matching.";
 
@@ -996,10 +1050,12 @@ public sealed class MessageRouter
 
     /// <summary>
     /// Each enabled task gets a row of two buttons: the task name (callback =
-    /// task name → fast-path Run, with conversational parameter collection
-    /// if anything required is missing), and a "More" button that fires
-    /// /task &lt;name&gt; for the per-task drill-down with Show / Stop /
-    /// Restart actions.
+    /// /run &lt;name&gt;, which dispatches through the same path as a typed
+    /// /run including conversational parameter collection) and a "More" button
+    /// that fires /task &lt;name&gt; for the per-task drill-down. The slash-
+    /// command callback shape is intentional — bare task names would be
+    /// consumed by a pending Show-intent followup as the answer to "which
+    /// task?", routing a tap-to-run as a Show by accident.
     /// </summary>
     private IReadOnlyList<IReadOnlyList<InlineButton>>? BuildTaskKeyboard()
     {
@@ -1009,8 +1065,8 @@ public sealed class MessageRouter
         {
             rows.Add(new InlineButton[]
             {
-                new(t.Name,  t.Name),
-                new("More",  $"/task {t.Name}")
+                new(t.Name, $"/run {t.Name}"),
+                new("More", $"/task {t.Name}")
             });
         }
         return rows;

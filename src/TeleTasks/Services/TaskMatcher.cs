@@ -295,7 +295,7 @@ Rules:
     /// intent string that parses to our enum, use it. Otherwise fall back to
     /// the legacy virtual-route alias so old model responses keep working.
     /// </summary>
-    private static TaskIntent ResolveIntent(string? intentStr, string? taskName) =>
+    internal static TaskIntent ResolveIntent(string? intentStr, string? taskName) =>
         intentStr is not null &&
         Enum.TryParse<TaskIntent>(intentStr, ignoreCase: true, out var parsed)
             ? parsed

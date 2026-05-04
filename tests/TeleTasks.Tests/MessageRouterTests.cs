@@ -393,15 +393,15 @@ public sealed class MessageRouterTests : IDisposable
         Assert.NotNull(keyboard);
         Assert.Equal(2, keyboard.Count);
 
-        Assert.Equal("ping",        keyboard[0][0].Label);
-        Assert.Equal("ping",        keyboard[0][0].CallbackData);
-        Assert.Equal("More",        keyboard[0][1].Label);
-        Assert.Equal("/task ping",  keyboard[0][1].CallbackData);
+        Assert.Equal("ping",         keyboard[0][0].Label);
+        Assert.Equal("/run ping",    keyboard[0][0].CallbackData);
+        Assert.Equal("More",         keyboard[0][1].Label);
+        Assert.Equal("/task ping",   keyboard[0][1].CallbackData);
 
-        Assert.Equal("render",          keyboard[1][0].Label);
-        Assert.Equal("render",          keyboard[1][0].CallbackData);
-        Assert.Equal("More",            keyboard[1][1].Label);
-        Assert.Equal("/task render",    keyboard[1][1].CallbackData);
+        Assert.Equal("render",       keyboard[1][0].Label);
+        Assert.Equal("/run render",  keyboard[1][0].CallbackData);
+        Assert.Equal("More",         keyboard[1][1].Label);
+        Assert.Equal("/task render", keyboard[1][1].CallbackData);
     }
 
     [Fact]
@@ -439,7 +439,7 @@ public sealed class MessageRouterTests : IDisposable
         // Callbacks fire the slash-command form, so taps go through the
         // existing dispatch path (including the int-or-name forks).
         var callbacks = keyboard.SelectMany(r => r.Select(b => b.CallbackData)).ToList();
-        Assert.Contains("render",          callbacks);
+        Assert.Contains("/run render",     callbacks);
         Assert.Contains("/results render", callbacks);
         Assert.Contains("/stop render",    callbacks);
         Assert.Contains("/restart render", callbacks);
@@ -556,6 +556,119 @@ public sealed class MessageRouterTests : IDisposable
         Assert.Equal(
             new[] { TaskIntent.Run, TaskIntent.Show, TaskIntent.Status, TaskIntent.Stop, TaskIntent.Restart },
             MessageRouter.IntentsFor(task));
+    }
+
+    // ─── /run + the pending-Show button-collision fix ─────────────────
+
+    [Fact]
+    public async Task Run_without_arg_returns_usage()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Run_unknown_task_reports_not_found()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run nosuch"));
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("nosuch", _chat.SentHtmls[0].Html);
+    }
+
+    [Fact]
+    public async Task Run_known_task_executes_via_run_command()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"say","command":"/bin/echo","args":["hi"]}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run say"));
+        // Pre-execution status line lands as HTML.
+        Assert.NotEmpty(_chat.SentHtmls);
+        Assert.Contains(_chat.SentHtmls, m => m.Html.Contains("Running"));
+    }
+
+    [Fact]
+    public async Task Pending_show_intent_is_not_clobbered_by_run_button_callback()
+    {
+        // Simulates: user opens /results (pending Show intent set), then taps a
+        // task button in a previously-sent /tasks message. Before the fix the
+        // bare task name was consumed as the Show answer; now the button fires
+        // /run <name> which is a slash command, so the entry path clears the
+        // pending intent and routes through the Run path instead.
+        var router = BuildRouter("""
+            {"tasks":[{"name":"say","command":"/bin/echo"}]}
+            """);
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+        _chat.SentHtmlsWithKeyboard.Clear();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run say"));
+
+        var corpus = string.Join(" ", _chat.SentHtmls.Select(m => m.Html));
+        Assert.Contains("Running", corpus);
+    }
+
+    // ─── /stop and /restart by-name case-insensitivity ─────────────────
+
+    [Fact]
+    public async Task Stop_by_task_name_is_case_insensitive_when_no_active_jobs()
+    {
+        // Both casings reach the same "no active jobs" branch — proving the
+        // path doesn't reject casemismatch up front. Stop-success-with-active-job
+        // requires a real long-running process, so we cover the negative case
+        // and trust the equality check downstream.
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/stop Render"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No active jobs", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Restart_by_task_name_is_case_insensitive_when_no_finished_jobs()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/restart RENDER"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No finished jobs", _chat.SentTexts[0].Text);
+    }
+
+    // ─── TaskMatcher.ResolveIntent ─────────────────────────────────────
+
+    [Theory]
+    // Explicit intent strings parse to the enum, regardless of task name.
+    [InlineData("Run",      "render",            TaskIntent.Run)]
+    [InlineData("Show",     "render",            TaskIntent.Show)]
+    [InlineData("Status",   null,                TaskIntent.Status)]
+    [InlineData("Stop",     "render",            TaskIntent.Stop)]
+    [InlineData("Restart",  "render",            TaskIntent.Restart)]
+    [InlineData("Cancel",   null,                TaskIntent.Cancel)]
+    [InlineData("Help",     null,                TaskIntent.Help)]
+    // Explicit intent wins even when the task field is a legacy virtual route.
+    [InlineData("Restart",  "_show_results",     TaskIntent.Restart)]
+    // Unparseable intent string → fall back to legacy alias.
+    [InlineData("garbage",  "_show_results",     TaskIntent.Show)]
+    // Null intent + legacy virtual routes → alias mapping.
+    [InlineData(null,       "_show_results",     TaskIntent.Show)]
+    [InlineData(null,       "_show_tasks",       TaskIntent.Help)]
+    [InlineData(null,       "_show_help",        TaskIntent.Help)]
+    [InlineData(null,       "_show_jobs",        TaskIntent.Status)]
+    [InlineData(null,       "_check_latest_job", TaskIntent.Status)]
+    // Null intent + real task → default Run.
+    [InlineData(null,       "render",            TaskIntent.Run)]
+    [InlineData(null,       null,                TaskIntent.Run)]
+    public void ResolveIntent_handles_explicit_and_legacy_alias(
+        string? intentStr, string? taskName, TaskIntent expected)
+    {
+        Assert.Equal(expected, TaskMatcher.ResolveIntent(intentStr, taskName));
     }
 
     // ─── TaskMatcher static helpers ────────────────────────────────────
