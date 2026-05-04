@@ -160,8 +160,7 @@ public sealed class TaskExecutor
             };
             result.Artifacts.Add(new OutputArtifact("text", null, null,
                 $"Started job {job.Id} ({task.Name}, pid {job.Pid}).\n" +
-                $"Log: {job.LogPath}\n" +
-                $"Use /job {job.Id} to check progress, /stop {job.Id} to kill."));
+                $"Log: {job.LogPath}"));
             return result;
         }
         catch (Exception ex)
