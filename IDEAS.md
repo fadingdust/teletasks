@@ -71,6 +71,70 @@ When the conversational loop asks for `prompt`, surface 3-5 recent
 values as suggestions. Inline keyboard buttons or text quick-reply.
 Pairs naturally with `/history`.
 
+### Telegram polls for parameter choices
+Any task parameter could be answered via a native Telegram poll
+instead of a typed reply or inline-keyboard button row. The poll's
+`question` is the parameter prompt; `options` are the candidate
+values; the user's selection comes back as a `PollAnswer` update,
+which the bot translates into a synthetic message (mirroring the
+existing `CallbackQuery` → `OnMessage` shim) and resolves through
+the conversational state machine.
+
+Where this beats inline keyboards:
+- **Native UI affordance** — polls render bigger, separate from the
+  message thread, and stay scrollable/queryable in the chat history.
+- **Multi-select** — `allows_multiple_answers: true` for parameters
+  that accept a list (currently coerced to a comma-separated string;
+  could promote to a `string[]` parameter type with the right
+  `ParameterValueParser` branch).
+- **Anonymous group polls** — useful in shared chats where an
+  authorized admin sets up a render and a non-authorized user can
+  contribute an option without seeing the full task surface.
+
+When polls are appropriate (vs. inline keyboards):
+- `enum` parameters with 2-10 options → poll is the better UX.
+- Boolean parameters → 2-option poll (Yes / No) reads more
+  naturally than a `[true] [false]` keyboard.
+- Free-text `string` parameters with autocomplete suggestions →
+  inline keyboard wins (taps land in the chat draft, user can
+  edit before sending; polls force a selection-only flow).
+- Parameters with > ~10 options → neither (Telegram poll cap is
+  10; inline keyboards scroll). Probably stay text-prompt.
+
+Implementation sketch:
+- `IChatProvider` gains `SendPollAsync(chat, question, options,
+  allowsMultiple)`. Default impl falls back to `SendHtmlAsync` with
+  an inline keyboard so non-Telegram providers still work.
+- `TelegramChatProvider` calls `_bot.SendPoll` and tracks the
+  returned `poll_id` in a per-chat lookup table mapping
+  `poll_id → ChatId + parameter context`. Subscribes `OnUpdate`
+  for `PollAnswer` updates, maps the chosen option indexes back to
+  values, fires synthetic `OnMessage`. Anonymous-poll mode would
+  miss the user id; for parameter collection we'd use
+  `is_anonymous: false`.
+- `MessageRouter.PromptNextParameterAsync` switches behaviour for
+  `Type == "string"` + `Enum.Count > 1` (and for `boolean`): send
+  a poll instead of the current text-with-keyboard form. List-typed
+  parameters: a multi-select poll plus a `ParameterValueParser`
+  branch that joins selected values with the parameter's declared
+  delimiter.
+- New per-task option in `TaskDefinition.parameters[].ui`:
+  `"poll"` | `"buttons"` | `"text"` | `"auto"` so the task author
+  can override the heuristic when needed.
+
+Open questions:
+- Telegram polls require a non-empty question and at least 2 options
+  — small enums (single value) need a different prompt anyway, so
+  no real conflict.
+- Cross-provider story for Discord / Slack / Matrix: Discord polls
+  exist (recent feature); Slack has no native poll but interactive
+  blocks cover the same ground; Matrix has `m.poll.start` events.
+  The fallback-to-keyboard default keeps each provider working
+  even if its native poll story isn't implemented yet.
+- Parameter validation: poll answers are by index, so type coercion
+  is trivial (the option list IS the enum). Free-text fallback is
+  the existing `ParameterValueParser` path.
+
 ### Reply-to-job to add a comment / re-run
 Telegram supports replying to a specific message. If the user replies
 to "Started job 5 …" with text, treat it as `/job 5 <text>` style —
