@@ -562,11 +562,20 @@ public sealed class MessageRouter
         {
             sb.Append("\n<i>").Append(HtmlEscape(p.Description)).Append("</i>");
         }
+        IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard = null;
         if (p.Enum is { Count: > 0 })
         {
-            sb.Append("\nChoices: <code>").Append(HtmlEscape(string.Join(", ", p.Enum))).Append("</code>");
+            const int rowSize = 3;
+            var rows = new List<List<InlineButton>>();
+            for (int i = 0; i < p.Enum.Count; i += rowSize)
+            {
+                rows.Add(p.Enum.Skip(i).Take(rowSize)
+                    .Select(v => new InlineButton(v, v))
+                    .ToList());
+            }
+            keyboard = rows;
         }
-        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
+        await _provider.SendHtmlAsync(chat, sb.ToString(), keyboard, cancellationToken);
     }
 
     private async Task ContinueParameterCollectionAsync(ChatId chat, PendingTaskState state, string text, CancellationToken cancellationToken)
