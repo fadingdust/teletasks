@@ -83,8 +83,8 @@ public sealed class MessageRouterTests : IDisposable
     {
         var router = BuildRouter();
         await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
-        Assert.Single(_chat.SentTexts);
-        Assert.Contains("No tasks configured", _chat.SentTexts[0].Text);
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("No tasks configured", _chat.SentHtmls[0].Html);
     }
 
     [Fact]
@@ -94,8 +94,8 @@ public sealed class MessageRouterTests : IDisposable
             {"tasks":[{"name":"ping","command":"/bin/echo","args":["pong"]}]}
             """);
         await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
-        Assert.Single(_chat.SentTexts);
-        Assert.Contains("ping", _chat.SentTexts[0].Text);
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("ping", _chat.SentHtmls[0].Html);
     }
 
     [Fact]
@@ -162,12 +162,82 @@ public sealed class MessageRouterTests : IDisposable
     }
 
     [Fact]
-    public async Task Results_without_task_name_returns_usage()
+    public async Task Results_without_task_name_prompts_for_task_name()
     {
         var router = BuildRouter();
         await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("Which task", _chat.SentHtmls[0].Html);
+    }
+
+    [Fact]
+    public async Task Results_prompt_attaches_buttons_for_non_text_output_tasks()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"snap","command":"/bin/snap","output":{"type":"Image","path":"/tmp/x.png"}},
+              {"name":"render","command":"/bin/render","output":{"type":"Images","directory":"/tmp"}}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        var keyboard = _chat.SentHtmlsWithKeyboard[0].Keyboard;
+        Assert.NotNull(keyboard);
+        // Only snap and render — ping has Text output, so it's excluded.
+        Assert.Equal(2, keyboard.Count);
+        Assert.Equal("snap",            keyboard[0][0].Label);
+        Assert.Equal("/results snap",   keyboard[0][0].CallbackData);
+        Assert.Equal("render",          keyboard[1][0].Label);
+        Assert.Equal("/results render", keyboard[1][0].CallbackData);
+    }
+
+    [Fact]
+    public async Task Results_prompt_with_only_text_tasks_attaches_no_keyboard()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"ping","command":"/bin/echo"}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
+    public async Task Results_followup_with_task_name_evaluates_that_task()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"ping","command":"/bin/echo"}]}
+            """);
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+
+        // Reply with the task name — the router resolves the pending Show intent.
+        await router.HandleAsync(FakeChatProvider.Msg(42, "ping"));
+
+        // ping has Text output, so SendResultsAsync explains there's no cached state.
+        // Either way, the bot must mention "ping" — which means the followup landed.
+        var corpus = string.Join(" ",
+            _chat.SentTexts.Select(m => m.Text).Concat(_chat.SentHtmls.Select(m => m.Html)));
+        Assert.Contains("ping", corpus);
+    }
+
+    [Fact]
+    public async Task Results_followup_cancelled_via_slash_cancel()
+    {
+        var router = BuildRouter();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/cancel"));
+
         Assert.Single(_chat.SentTexts);
-        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+        Assert.Contains("Cancelled", _chat.SentTexts[0].Text);
     }
 
     [Fact]
@@ -285,6 +355,336 @@ public sealed class MessageRouterTests : IDisposable
         await router.HandleAsync(FakeChatProvider.Msg(42, ""));
         Assert.Empty(_chat.SentTexts);
         Assert.Empty(_chat.SentHtmls);
+    }
+
+    // ─── Inline keyboard buttons ───────────────────────────────────────
+
+    [Fact]
+    public async Task Jobs_with_no_jobs_sends_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/jobs"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
+    public async Task Job_status_for_unknown_id_sends_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/job 99"));
+        // Falls back to SendTextAsync — no html at all.
+        Assert.Empty(_chat.SentHtmlsWithKeyboard);
+    }
+
+    [Fact]
+    public async Task Tasks_attaches_run_and_more_buttons_per_task()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"render","command":"/bin/render","longRunning":true}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        var keyboard = _chat.SentHtmlsWithKeyboard[0].Keyboard;
+        Assert.NotNull(keyboard);
+        Assert.Equal(2, keyboard.Count);
+
+        Assert.Equal("ping",         keyboard[0][0].Label);
+        Assert.Equal("/run ping",    keyboard[0][0].CallbackData);
+        Assert.Equal("More",         keyboard[0][1].Label);
+        Assert.Equal("/task ping",   keyboard[0][1].CallbackData);
+
+        Assert.Equal("render",       keyboard[1][0].Label);
+        Assert.Equal("/run render",  keyboard[1][0].CallbackData);
+        Assert.Equal("More",         keyboard[1][1].Label);
+        Assert.Equal("/task render", keyboard[1][1].CallbackData);
+    }
+
+    [Fact]
+    public async Task Tasks_with_empty_registry_attaches_no_keyboard()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        Assert.Null(_chat.SentHtmlsWithKeyboard[0].Keyboard);
+    }
+
+    [Fact]
+    public async Task Task_detail_renders_action_buttons_for_long_running_image_task()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true,
+                       "output":{"type":"Images","directory":"/tmp"},
+                       "description":"generate images"}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/task render"));
+
+        Assert.Single(_chat.SentHtmlsWithKeyboard);
+        var msg = _chat.SentHtmlsWithKeyboard[0];
+        Assert.Contains("render", msg.Html);
+        Assert.Contains("generate images", msg.Html);
+
+        var keyboard = msg.Keyboard;
+        Assert.NotNull(keyboard);
+        var labels = keyboard.SelectMany(r => r.Select(b => b.Label)).ToList();
+        Assert.Contains("Run render",     labels);
+        Assert.Contains("Show render",    labels);
+        Assert.Contains("Stop render",    labels);
+        Assert.Contains("Restart render", labels);
+
+        // Callbacks fire the slash-command form, so taps go through the
+        // existing dispatch path (including the int-or-name forks).
+        var callbacks = keyboard.SelectMany(r => r.Select(b => b.CallbackData)).ToList();
+        Assert.Contains("/run render",     callbacks);
+        Assert.Contains("/results render", callbacks);
+        Assert.Contains("/stop render",    callbacks);
+        Assert.Contains("/restart render", callbacks);
+    }
+
+    [Fact]
+    public async Task Task_detail_for_unknown_task_reports_not_found()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/task nosuch"));
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("nosuch", _chat.SentHtmls[0].Html);
+    }
+
+    [Fact]
+    public async Task Task_detail_without_arg_returns_usage()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/task"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Stop_with_task_name_no_active_jobs_reports_none()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/stop render"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No active jobs", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Restart_with_task_name_no_finished_jobs_reports_none()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/restart render"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No finished jobs", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Tasks_renders_intent_badges_per_row()
+    {
+        var router = BuildRouter("""
+            {"tasks":[
+              {"name":"ping","command":"/bin/echo"},
+              {"name":"render","command":"/bin/render","longRunning":true,
+                "output":{"type":"Images","directory":"/tmp"}}
+            ]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentHtmls);
+        var html = _chat.SentHtmls[0].Html;
+
+        Assert.Contains("<code>ping</code> [Run]", html);
+        Assert.Contains("<code>render</code> [Run · Show · Status · Stop · Restart]", html);
+    }
+
+    [Fact]
+    public async Task Tasks_converts_backticks_in_descriptions_to_code_tags()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"sh_run","command":"/bin/bash","args":["run.sh"],
+                       "description":"Run `run.sh`."}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/tasks"));
+        Assert.Single(_chat.SentHtmls);
+        var html = _chat.SentHtmls[0].Html;
+        Assert.Contains("Run <code>run.sh</code>.", html);
+        Assert.DoesNotContain("`run.sh`", html);
+    }
+
+    [Fact]
+    public void FormatDescription_escapes_html_before_converting_backticks()
+    {
+        // <foo> inside backticks must end up as &lt;foo&gt; inside <code>,
+        // not as literal HTML tags that Telegram would try to parse.
+        var actual = MessageRouter.FormatDescription("see `<foo>` for more");
+        Assert.Equal("see <code>&lt;foo&gt;</code> for more", actual);
+    }
+
+    [Fact]
+    public void FormatDescription_passes_text_without_backticks_through_escaped()
+    {
+        Assert.Equal("a &amp; b &lt; c",
+            MessageRouter.FormatDescription("a & b < c"));
+    }
+
+    [Fact]
+    public void IntentsFor_text_output_short_running_is_Run_only()
+    {
+        var task = new TaskDefinition { Name = "ping" };
+        Assert.Equal(new[] { TaskIntent.Run }, MessageRouter.IntentsFor(task));
+    }
+
+    [Fact]
+    public void IntentsFor_image_output_short_running_adds_Show()
+    {
+        var task = new TaskDefinition { Name = "snap" };
+        task.Output.Type = TaskOutputType.Image;
+        Assert.Equal(new[] { TaskIntent.Run, TaskIntent.Show }, MessageRouter.IntentsFor(task));
+    }
+
+    [Fact]
+    public void IntentsFor_long_running_adds_Status_Stop_Restart()
+    {
+        var task = new TaskDefinition { Name = "render", LongRunning = true };
+        task.Output.Type = TaskOutputType.Images;
+        Assert.Equal(
+            new[] { TaskIntent.Run, TaskIntent.Show, TaskIntent.Status, TaskIntent.Stop, TaskIntent.Restart },
+            MessageRouter.IntentsFor(task));
+    }
+
+    // ─── /run + the pending-Show button-collision fix ─────────────────
+
+    [Fact]
+    public async Task Run_without_arg_returns_usage()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("Usage", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Run_unknown_task_reports_not_found()
+    {
+        var router = BuildRouter();
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run nosuch"));
+        Assert.Single(_chat.SentHtmls);
+        Assert.Contains("nosuch", _chat.SentHtmls[0].Html);
+    }
+
+    [Fact]
+    public async Task Run_known_task_executes_via_run_command()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"say","command":"/bin/echo","args":["hi"]}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run say"));
+        // Pre-execution status line lands as HTML.
+        Assert.NotEmpty(_chat.SentHtmls);
+        Assert.Contains(_chat.SentHtmls, m => m.Html.Contains("Running"));
+    }
+
+    [Fact]
+    public async Task Pending_show_intent_is_not_clobbered_by_run_button_callback()
+    {
+        // Simulates: user opens /results (pending Show intent set), then taps a
+        // task button in a previously-sent /tasks message. Before the fix the
+        // bare task name was consumed as the Show answer; now the button fires
+        // /run <name> which is a slash command, so the entry path clears the
+        // pending intent and routes through the Run path instead.
+        var router = BuildRouter("""
+            {"tasks":[{"name":"say","command":"/bin/echo"}]}
+            """);
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/results"));
+        _chat.SentTexts.Clear();
+        _chat.SentHtmls.Clear();
+        _chat.SentHtmlsWithKeyboard.Clear();
+
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/run say"));
+
+        var corpus = string.Join(" ", _chat.SentHtmls.Select(m => m.Html));
+        Assert.Contains("Running", corpus);
+    }
+
+    // ─── /stop and /restart by-name case-insensitivity ─────────────────
+
+    [Fact]
+    public async Task Stop_by_task_name_is_case_insensitive_when_no_active_jobs()
+    {
+        // Both casings reach the same "no active jobs" branch — proving the
+        // path doesn't reject casemismatch up front. Stop-success-with-active-job
+        // requires a real long-running process, so we cover the negative case
+        // and trust the equality check downstream.
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/stop Render"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No active jobs", _chat.SentTexts[0].Text);
+    }
+
+    [Fact]
+    public async Task Restart_by_task_name_is_case_insensitive_when_no_finished_jobs()
+    {
+        var router = BuildRouter("""
+            {"tasks":[{"name":"render","command":"/bin/render","longRunning":true}]}
+            """);
+        await router.HandleAsync(FakeChatProvider.Msg(42, "/restart RENDER"));
+        Assert.Single(_chat.SentTexts);
+        Assert.Contains("No finished jobs", _chat.SentTexts[0].Text);
+    }
+
+    // ─── TaskMatcher.ResolveIntent ─────────────────────────────────────
+
+    [Theory]
+    // Explicit intent strings parse to the enum, regardless of task name.
+    [InlineData("Run",      "render",            TaskIntent.Run)]
+    [InlineData("Show",     "render",            TaskIntent.Show)]
+    [InlineData("Status",   null,                TaskIntent.Status)]
+    [InlineData("Stop",     "render",            TaskIntent.Stop)]
+    [InlineData("Restart",  "render",            TaskIntent.Restart)]
+    [InlineData("Cancel",   null,                TaskIntent.Cancel)]
+    [InlineData("Help",     null,                TaskIntent.Help)]
+    // Explicit intent wins even when the task field is a legacy virtual route.
+    [InlineData("Restart",  "_show_results",     TaskIntent.Restart)]
+    // Unparseable intent string → fall back to legacy alias.
+    [InlineData("garbage",  "_show_results",     TaskIntent.Show)]
+    // Null intent + legacy virtual routes → alias mapping.
+    [InlineData(null,       "_show_results",     TaskIntent.Show)]
+    [InlineData(null,       "_show_tasks",       TaskIntent.Help)]
+    [InlineData(null,       "_show_help",        TaskIntent.Help)]
+    [InlineData(null,       "_show_jobs",        TaskIntent.Status)]
+    [InlineData(null,       "_check_latest_job", TaskIntent.Status)]
+    // Null intent + real task → default Run.
+    [InlineData(null,       "render",            TaskIntent.Run)]
+    [InlineData(null,       null,                TaskIntent.Run)]
+    public void ResolveIntent_handles_explicit_and_legacy_alias(
+        string? intentStr, string? taskName, TaskIntent expected)
+    {
+        Assert.Equal(expected, TaskMatcher.ResolveIntent(intentStr, taskName));
+    }
+
+    // ─── TaskMatcher static helpers ────────────────────────────────────
+
+    [Theory]
+    [InlineData("_show_tasks",       true)]
+    [InlineData("_show_help",        true)]
+    [InlineData("_show_results",     true)]
+    [InlineData("_show_jobs",        true)]
+    [InlineData("_check_latest_job", true)]
+    [InlineData("render",            false)]
+    [InlineData("",                  false)]
+    [InlineData(null,                false)]
+    public void IsVirtualRoute_identifies_virtual_routes(string? name, bool expected)
+    {
+        Assert.Equal(expected, TaskMatcher.IsVirtualRoute(name));
     }
 
     // ─── Private test helpers ──────────────────────────────────────────

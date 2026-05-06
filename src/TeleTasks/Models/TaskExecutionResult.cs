@@ -22,4 +22,5 @@ public sealed class TaskExecutionResult
 public sealed record TaskMatch(
     string TaskName,
     Dictionary<string, object?> Parameters,
-    string? Reasoning);
+    string? Reasoning,
+    TaskIntent Intent = TaskIntent.Run);

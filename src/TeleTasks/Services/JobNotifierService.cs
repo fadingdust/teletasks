@@ -183,9 +183,18 @@ public sealed class JobNotifierService : BackgroundService
                .Append(Escape(job.TaskName)).Append("</code> ")
                .Append(Escape(FormatJobExit(job)))
                .Append(" after ").Append(Escape(FormatElapsed(job.Elapsed))).Append('.');
+
+        // Tap-actions for the moment a job ends: [Job N] for output / log tail,
+        // [Restart N] only when there's a stored task definition (otherwise the
+        // /restart handler refuses with "no stored task definition").
+        var row = new List<InlineButton> { new($"Job {job.Id}", $"/job {job.Id}") };
+        if (job.Task is { Command: { Length: > 0 } })
+            row.Add(new InlineButton($"Restart {job.Id}", $"/restart {job.Id}"));
+        var keyboard = new IReadOnlyList<InlineButton>[] { row };
+
         try
         {
-            await provider.SendHtmlAsync(chat, summary.ToString(), ct);
+            await provider.SendHtmlAsync(chat, summary.ToString(), keyboard, ct);
             _jobs.MarkCompletionNotified(job.Id);
             _logger.LogInformation("Pushed completion summary for job {Id}.", job.Id);
         }

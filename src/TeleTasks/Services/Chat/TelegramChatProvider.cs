@@ -5,6 +5,7 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Telegram.Bot.Types.ReplyMarkups;
 using TeleTasks.Configuration;
 
 namespace TeleTasks.Services.Chat;
@@ -74,6 +75,7 @@ public sealed class TelegramChatProvider : IChatProvider
 
         _bot.OnError += OnTelegramError;
         _bot.OnMessage += OnTelegramMessage;
+        _bot.OnUpdate += OnTelegramUpdate;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
@@ -81,6 +83,7 @@ public sealed class TelegramChatProvider : IChatProvider
         if (_bot is null) return Task.CompletedTask;
         _bot.OnError -= OnTelegramError;
         _bot.OnMessage -= OnTelegramMessage;
+        _bot.OnUpdate -= OnTelegramUpdate;
         return Task.CompletedTask;
     }
 
@@ -94,6 +97,22 @@ public sealed class TelegramChatProvider : IChatProvider
     {
         if (_bot is null) return;
         await _bot.SendMessage(ToLong(chat), html, parseMode: ParseMode.Html, cancellationToken: cancellationToken);
+    }
+
+    public async Task SendHtmlAsync(ChatId chat, string html,
+        IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard, CancellationToken cancellationToken)
+    {
+        if (_bot is null) return;
+        await _bot.SendMessage(ToLong(chat), html, parseMode: ParseMode.Html,
+            replyMarkup: BuildKeyboard(keyboard), cancellationToken: cancellationToken);
+    }
+
+    private static InlineKeyboardMarkup? BuildKeyboard(IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard)
+    {
+        if (keyboard is null or { Count: 0 }) return null;
+        return new InlineKeyboardMarkup(
+            keyboard.Select(row =>
+                row.Select(b => InlineKeyboardButton.WithCallbackData(b.Label, b.CallbackData))));
     }
 
     public async Task SendImageAsync(ChatId chat, string path, string? caption, CancellationToken cancellationToken)
@@ -131,6 +150,27 @@ public sealed class TelegramChatProvider : IChatProvider
         if (long.TryParse(message.Chat.Id, out var chatId) && _options.AllowedChatIds.Contains(chatId))
             return true;
         return false;
+    }
+
+    private async Task OnTelegramUpdate(Update update)
+    {
+        if (update.CallbackQuery is not { } cbq) return;
+        if (OnMessage is null) return;
+
+        // Answer immediately so Telegram removes the loading spinner on the button.
+        if (_bot is not null)
+            await _bot.AnswerCallbackQuery(cbq.Id);
+
+        var text = cbq.Data;
+        if (string.IsNullOrEmpty(text)) return;
+
+        var inbound = new IncomingMessage(
+            Chat: ChatId.FromTelegram(cbq.Message?.Chat.Id ?? cbq.From.Id),
+            UserId: cbq.From.Id.ToString(),
+            Username: cbq.From.Username ?? cbq.From.FirstName ?? "unknown",
+            Text: text);
+
+        await OnMessage.Invoke(inbound);
     }
 
     private async Task OnTelegramMessage(Message message, UpdateType updateType)

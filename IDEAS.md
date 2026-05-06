@@ -13,16 +13,39 @@ questions / risks. Add freely; promote to SPECS when scope is clear.
 
 ## Bot / UX
 
-### Inline keyboard buttons for job actions
-"Started job 5 …" message attaches `[Status]` `[Stop]` buttons that
-fire callback queries; bot handler routes them through the same
-`SendJobStatusAsync(5)` / `Stop(5)` paths the slash commands already
-use. Avoids relying on the undocumented `tg://msg?text=…` scheme. Same
-pattern for `/jobs` list rows and the completion summary.
-- Lift: ~50-80 lines (OnCallbackQuery handler + button construction in
-  3-4 send sites + callback_data parser).
-- Open: should `/jobs` rows have inline buttons or stay as text? Inline
-  keyboards are paginated awkwardly when many jobs.
+### Multi-active-jobs Stop disambiguation
+`HandleIntentStopAsync` early-exits with "Multiple active jobs — use a
+specific command: /stop 3, /stop 7" when more than one active job
+matches the named task. Cleaner UX would be a pending-intent followup
+(reusing the `PendingIntentState` mechanism that powers the Show
+prompt) with `[Job 3] [Job 7]` buttons — one tap kills the right one.
+Same shape for ambiguous Restart targets. ~30 lines: extend
+`PendingIntentState` with a payload (list of candidate ids), have
+`ResolvePendingIntentAsync` dispatch through `_jobs.Stop` / `Restart`.
+
+### Telegram callback_data 64-byte cap
+`BuildTaskKeyboard`, `BuildTaskDetailKeyboard`, and the `/results`
+task-picker all embed task names verbatim in callback strings
+(`/run <name>`, `/results <name>`, etc.). Telegram caps
+`callback_data` at 64 bytes; a task whose name pushes past ~55 chars
+would silently fail at send time. Add a length guard at keyboard-build
+time, fall back to a hashed callback id with a side table, or surface
+"name too long for buttons — type the slash command instead."
+
+### Length-bounded keyboards
+With many tasks the `/tasks` and `/results` keyboards grow
+proportionally. Telegram allows up to 100 buttons per message, so
+50-task setups still work, but mobile scrolling becomes awkward.
+Options: paginate via callback (`/tasks page=2`), filter by recency
+(see also "Recent tasks first in /results"), or collapse seldom-used
+tasks behind a `[More tasks…]` button.
+
+### Recent tasks first in /results task picker
+`PromptForShowTaskAsync` lists tasks in `tasks.json` order. With many
+tasks it's faster to find what you want by recency — sort the picker
+buttons by output mtime descending so the freshest renders / logs /
+files float to the top. Two ~10-line variants: simple sort, or split
+into `[Recent]` and `[All]` sections at a 3-5 button cutoff.
 
 ### Per-job push toggle (`/notify off N` / `/notify on N`)
 Once the 30s push poller is real, some jobs will be noisy (renders

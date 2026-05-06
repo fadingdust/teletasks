@@ -17,46 +17,38 @@ public sealed class TaskMatcher
     private const string SystemPrompt = """
 You are a strict request router for a personal Linux assistant bot.
 
-Decide where to route the user's message:
+For every message produce TWO fields:
 
-  • A REAL task name from the catalog — only when the user is clearly asking
-    to PERFORM an action that one task explicitly does. Extract parameters
-    from the message into the "parameters" object.
-  • "_show_results" — when the user is asking to SEE / SHOW / GET the most
-    recent output of a specific task without running it again
-    (e.g. "results from py_render", "show me my last screenshots from
-    take_screenshot", "what did the build_logs task produce"). Put the
-    target task's name in parameters as "task_name".
-  • "_show_tasks" — when the user is asking what the bot can do, what
-    tasks exist, what's available.
-  • "_show_help" — when the user is asking for help or instructions.
-  • "_show_jobs" — when the user is asking about running tasks / jobs /
-    what's in progress (e.g. "what's running?", "list jobs", "anything
-    still going?"). Only relevant for tasks marked longRunning.
-  • "_check_latest_job" — when the user is asking how the most recent job
-    is going (e.g. "how's the render?", "is it done yet?", "any progress?")
-    without naming a task. Different from "_show_results" which targets
-    a specific task by name.
-  • null — for greetings, chit-chat, or anything the bot can't handle.
+  "intent" — what the user wants to DO (pick exactly one):
+    Run      — execute a task
+    Show     — view the latest output of a task without re-running it
+    Status   — check what jobs / long-running tasks are active or how a
+               specific job is going
+    Stop     — kill a running job
+    Restart  — re-run a previously finished job
+    Cancel   — abort a pending parameter-collection prompt
+    Help     — list tasks, show help, or explain what the bot can do
+
+  "task" — which task the intent targets:
+    • A REAL task name from the catalog for Run / Show / Restart.
+    • For Stop: the task name whose active job to stop, or null for
+      "stop whatever is running".
+    • For Status: null (show all jobs) unless the user is clearly asking
+      about one specific job — use "_check_latest_job" to indicate
+      "how's the most recent one going?".
+    • For Help: "_show_tasks" (list tasks) or "_show_help" (general help).
+    • null for Cancel, or when no task can be identified.
 
 Rules:
 - Respond with a single JSON object matching the response schema. No prose.
 - Only include parameter keys that the chosen task declares. Never invent
   parameters.
-- Use the parameter's declared type (string, integer, number, boolean).
-- NEVER invent string values. A parameter's value MUST appear (paraphrased
-  is OK) in the user's message. If you can't find a value for a required
-  parameter in the message, OMIT that parameter entirely from "parameters"
-  — the bot will ask the user. Empty string ("") is NOT a valid value;
-  if the user didn't say it, leave the key out.
-- If most required parameters are missing, set "task" to null and ask
-  for them in "reasoning".
-- "results from X", "what did X produce" with a SPECIFIC named task →
-  "_show_results". "How's the latest run going" with no task named →
-  "_check_latest_job".
-- When in doubt between running a real task and one of the virtual routes,
-  prefer the virtual route. It is much worse to run the wrong task than
-  to ask the user to clarify.
+- NEVER invent string values. If a required parameter isn't in the message,
+  OMIT it — the bot will ask. Empty string ("") is not a valid value.
+- If most required parameters are missing, set "task" to null and explain
+  in "reasoning".
+- When in doubt between Run and another intent, prefer the other intent.
+  It is much worse to run the wrong task than to ask the user to clarify.
 """;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -76,6 +68,10 @@ Rules:
         _registry = registry;
         _logger = logger;
     }
+
+    public static bool IsVirtualRoute(string? name) =>
+        name == ShowTasksRoute || name == ShowHelpRoute || name == ShowResultsRoute ||
+        name == ShowJobsRoute  || name == CheckLatestJobRoute;
 
     public async Task<TaskMatch?> MatchAsync(string userMessage, CancellationToken cancellationToken)
     {
@@ -105,13 +101,16 @@ Rules:
 
         if (payload is null || string.IsNullOrWhiteSpace(payload.Task))
         {
-            return new TaskMatch(string.Empty, new Dictionary<string, object?>(), payload?.Reasoning);
+            var intent0 = ResolveIntent(payload?.Intent, null);
+            return new TaskMatch(string.Empty, new Dictionary<string, object?>(), payload?.Reasoning, intent0);
         }
+
+        var intent = ResolveIntent(payload.Intent, payload.Task);
 
         if (payload.Task == ShowTasksRoute || payload.Task == ShowHelpRoute ||
             payload.Task == ShowJobsRoute || payload.Task == CheckLatestJobRoute)
         {
-            return new TaskMatch(payload.Task, new Dictionary<string, object?>(), payload.Reasoning);
+            return new TaskMatch(payload.Task, new Dictionary<string, object?>(), payload.Reasoning, intent);
         }
 
         if (payload.Task == ShowResultsRoute)
@@ -126,7 +125,7 @@ Rules:
             {
                 args["task_name"] = nameElement.GetString();
             }
-            return new TaskMatch(payload.Task, args, payload.Reasoning);
+            return new TaskMatch(payload.Task, args, payload.Reasoning, intent);
         }
 
         var task = _registry.Find(payload.Task);
@@ -134,22 +133,26 @@ Rules:
         {
             _logger.LogWarning("Ollama selected unknown task '{Task}'", payload.Task);
             return new TaskMatch(string.Empty, new Dictionary<string, object?>(),
-                $"Unknown task '{payload.Task}'.");
+                $"Unknown task '{payload.Task}'.", TaskIntent.Run);
         }
 
         var coerced = CoerceParameters(task, payload.Parameters);
-        return new TaskMatch(task.Name, coerced, payload.Reasoning);
+        return new TaskMatch(task.Name, coerced, payload.Reasoning, intent);
     }
 
     private string BuildUserPrompt(string userMessage)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Virtual routes (always available):");
-        sb.AppendLine($"- {ShowTasksRoute}: route here when the user asks what tasks/commands exist");
-        sb.AppendLine($"- {ShowHelpRoute}: route here when the user asks for help or instructions");
-        sb.AppendLine($"- {ShowResultsRoute}: route here when the user wants to see the latest output of a specific task without running it. Set parameters.task_name to the task's name.");
-        sb.AppendLine($"- {ShowJobsRoute}: route here when the user asks what jobs / long-running tasks are running");
-        sb.AppendLine($"- {CheckLatestJobRoute}: route here when the user asks how a recent or current job is going");
+        sb.AppendLine("Intent guide:");
+        sb.AppendLine("- Run: user wants to execute a task");
+        sb.AppendLine("- Show: user wants to see latest output without re-running (e.g. \"show results\", \"what did X produce\")");
+        sb.AppendLine("- Status: user asks what's running or how a job is doing");
+        sb.AppendLine($"  • use task=\"{CheckLatestJobRoute}\" for \"how's the latest going?\" (no specific task named)");
+        sb.AppendLine($"  • use task=null for \"list all jobs\"");
+        sb.AppendLine("- Stop: user wants to kill a running job. task = name of the task whose job to stop, or null");
+        sb.AppendLine("- Restart: user wants to re-run a finished job. task = the task name");
+        sb.AppendLine("- Cancel: user wants to cancel a pending prompt");
+        sb.AppendLine($"- Help: task=\"{ShowTasksRoute}\" for task list, task=\"{ShowHelpRoute}\" for instructions");
         sb.AppendLine();
         sb.AppendLine("Task catalog:");
         foreach (var task in _registry.Tasks)
@@ -199,6 +202,14 @@ Rules:
             ["type"] = "object",
             ["properties"] = new JsonObject
             {
+                ["intent"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JsonArray
+                    {
+                        "Run", "Show", "Status", "Stop", "Restart", "Cancel", "Help"
+                    }
+                },
                 ["task"] = new JsonObject
                 {
                     ["anyOf"] = new JsonArray
@@ -214,7 +225,7 @@ Rules:
                 },
                 ["reasoning"] = new JsonObject { ["type"] = "string" }
             },
-            ["required"] = new JsonArray { "task", "parameters", "reasoning" },
+            ["required"] = new JsonArray { "intent", "task", "parameters", "reasoning" },
             ["additionalProperties"] = false
         };
     }
@@ -273,8 +284,26 @@ Rules:
 
     private sealed class MatchPayload
     {
+        public string? Intent { get; set; }
         public string? Task { get; set; }
         public Dictionary<string, JsonElement>? Parameters { get; set; }
         public string? Reasoning { get; set; }
     }
+
+    /// <summary>
+    /// Resolve the intent from the payload. When the model emits an explicit
+    /// intent string that parses to our enum, use it. Otherwise fall back to
+    /// the legacy virtual-route alias so old model responses keep working.
+    /// </summary>
+    internal static TaskIntent ResolveIntent(string? intentStr, string? taskName) =>
+        intentStr is not null &&
+        Enum.TryParse<TaskIntent>(intentStr, ignoreCase: true, out var parsed)
+            ? parsed
+            : taskName switch
+            {
+                ShowResultsRoute               => TaskIntent.Show,
+                ShowTasksRoute or ShowHelpRoute => TaskIntent.Help,
+                ShowJobsRoute or CheckLatestJobRoute => TaskIntent.Status,
+                _ => TaskIntent.Run
+            };
 }

@@ -35,8 +35,29 @@ public sealed class ChatResultDispatcher
             return;
         }
 
+        // A long-running job just started: the first text artifact is the
+        // "Started job N..." status line. Render it with [Job N] [Stop N]
+        // buttons so the user has a one-tap path to status / kill.
+        OutputArtifact? jobStartArtifact = null;
+        if (result.JobId is int jobId)
+        {
+            jobStartArtifact = result.Artifacts.FirstOrDefault(a => a.Kind == "text");
+            var startText = jobStartArtifact?.Text ?? $"Started job {jobId}.";
+            var keyboard = new[]
+            {
+                new[]
+                {
+                    new InlineButton($"Job {jobId}",  $"/job {jobId}"),
+                    new InlineButton($"Stop {jobId}", $"/stop {jobId}")
+                }
+            };
+            await provider.SendHtmlAsync(chat, $"<pre>{Escape(startText)}</pre>",
+                keyboard, cancellationToken);
+        }
+
         foreach (var artifact in result.Artifacts)
         {
+            if (artifact == jobStartArtifact) continue;
             switch (artifact.Kind)
             {
                 case "text":

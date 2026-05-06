@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using TeleTasks.Models;
 using TeleTasks.Services.Chat;
@@ -63,10 +64,18 @@ public sealed class MessageRouter
         try
         {
             var pending = _conversation.Get(chat);
+            var pendingIntent = _conversation.GetIntent(chat);
             var isCommand = SlashCommand.IsCommand(text);
-            if (pending is not null && !isCommand)
+
+            if (!isCommand && pending is not null)
             {
                 await ContinueParameterCollectionAsync(chat, pending, text, ct);
+                return;
+            }
+            if (!isCommand && pendingIntent is not null)
+            {
+                _conversation.ClearIntent(chat);
+                await ResolvePendingIntentAsync(chat, pendingIntent, text, ct);
                 return;
             }
             if (isCommand && pending is not null)
@@ -76,6 +85,17 @@ public sealed class MessageRouter
                     $"Cancelled the pending {pending.Task.Name}.",
                     ct);
                 if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase)) return;
+                // Fall through so other slash commands still work.
+            }
+            if (isCommand && pendingIntent is not null)
+            {
+                _conversation.ClearIntent(chat);
+                if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _provider.SendTextAsync(chat,
+                        $"Cancelled the pending {pendingIntent.Intent} prompt.", ct);
+                    return;
+                }
                 // Fall through so other slash commands still work.
             }
 
@@ -113,40 +133,67 @@ public sealed class MessageRouter
                 match = await _matcher.MatchAsync(routedText, ct);
             }
 
-            if (match is null || string.IsNullOrEmpty(match.TaskName))
+            if (match is null)
             {
-                var reason = match?.Reasoning;
+                await _provider.SendTextAsync(chat,
+                    "I couldn't find a task that matches that. Try /tasks to see what I can do.", ct);
+                return;
+            }
+
+            switch (match.Intent)
+            {
+                case TaskIntent.Help:
+                    if (match.TaskName == TaskMatcher.ShowTasksRoute)
+                        await _provider.SendHtmlAsync(chat, BuildTaskList(), BuildTaskKeyboard(), ct);
+                    else
+                        await _provider.SendTextAsync(chat, BuildHelp(), ct);
+                    return;
+
+                case TaskIntent.Show:
+                {
+                    var requested = match.Parameters.TryGetValue("task_name", out var tn)
+                        ? tn?.ToString() : null;
+                    // When the model gave us a real task name (not a virtual route) use it directly.
+                    if (string.IsNullOrEmpty(requested) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+                        requested = match.TaskName;
+                    if (string.IsNullOrWhiteSpace(requested))
+                    {
+                        await PromptForShowTaskAsync(chat, ct);
+                        return;
+                    }
+                    await SendResultsAsync(chat, requested, ct);
+                    return;
+                }
+
+                case TaskIntent.Status:
+                    if (match.TaskName == TaskMatcher.CheckLatestJobRoute)
+                        await SendLatestJobStatusAsync(chat, ct);
+                    else
+                        await SendJobsListAsync(chat, ct);
+                    return;
+
+                case TaskIntent.Stop:
+                    await HandleIntentStopAsync(chat, match, ct);
+                    return;
+
+                case TaskIntent.Restart:
+                    await HandleIntentRestartAsync(chat, match, ct);
+                    return;
+
+                case TaskIntent.Cancel:
+                    _conversation.Clear(chat);
+                    await _provider.SendTextAsync(chat, "Nothing pending to cancel.", ct);
+                    return;
+            }
+
+            // TaskIntent.Run — fall through to task execution.
+            if (string.IsNullOrEmpty(match.TaskName))
+            {
+                var reason = match.Reasoning;
                 var reply = string.IsNullOrWhiteSpace(reason)
                     ? "I couldn't find a task that matches that. Try /tasks to see what I can do."
                     : $"No matching task: {reason}";
                 await _provider.SendTextAsync(chat, reply, ct);
-                return;
-            }
-
-            if (match.TaskName == TaskMatcher.ShowTasksRoute)
-            {
-                await _provider.SendTextAsync(chat, BuildTaskList(), ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowHelpRoute)
-            {
-                await _provider.SendTextAsync(chat, BuildHelp(), ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowResultsRoute)
-            {
-                var requested = match.Parameters.TryGetValue("task_name", out var tn) ? tn?.ToString() : null;
-                await SendResultsAsync(chat, requested, ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.ShowJobsRoute)
-            {
-                await SendJobsListAsync(chat, ct);
-                return;
-            }
-            if (match.TaskName == TaskMatcher.CheckLatestJobRoute)
-            {
-                await SendLatestJobStatusAsync(chat, ct);
                 return;
             }
 
@@ -158,30 +205,7 @@ public sealed class MessageRouter
                 return;
             }
 
-            var missingRequired = task.Parameters
-                .Where(p => p.Required && !MissingValueGuard.HasUsableValue(p, match.Parameters, routedText, task.Name))
-                .ToList();
-            if (missingRequired.Count > 0)
-            {
-                var state = _conversation.Begin(chat, task, match.Parameters, missingRequired);
-                await _provider.SendHtmlAsync(chat,
-                    $"-> <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
-                    "Send each one in turn, or /cancel to abort.",
-                    ct);
-                await PromptNextParameterAsync(chat, state, ct);
-                return;
-            }
-
-            await _provider.SendHtmlAsync(chat,
-                $"-> Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(match.Parameters))}",
-                ct);
-
-            var result = await _executor.ExecuteAsync(task, match.Parameters, ct);
-            if (result.JobId is int newJobId)
-            {
-                _jobs.AssignChat(newJobId, chat);
-            }
-            await _dispatcher.DispatchAsync(_provider, chat, result, ct);
+            await ExecuteRunAsync(chat, task, match.Parameters, routedText, ct);
         }
         catch (Exception ex)
         {
@@ -204,7 +228,7 @@ public sealed class MessageRouter
                 await _provider.SendTextAsync(chat, BuildHelp(), cancellationToken);
                 break;
             case "/tasks":
-                await _provider.SendTextAsync(chat, BuildTaskList(), cancellationToken);
+                await _provider.SendHtmlAsync(chat, BuildTaskList(), BuildTaskKeyboard(), cancellationToken);
                 break;
             case "/reload":
                 _registry.Load();
@@ -224,6 +248,12 @@ public sealed class MessageRouter
                 break;
             case "/job":
                 await HandleJobCommandAsync(chat, text, cancellationToken);
+                break;
+            case "/task":
+                await HandleTaskDetailCommandAsync(chat, text, cancellationToken);
+                break;
+            case "/run":
+                await HandleRunCommandAsync(chat, text, cancellationToken);
                 break;
             case "/stop":
                 await HandleStopCommandAsync(chat, text, cancellationToken);
@@ -249,9 +279,7 @@ public sealed class MessageRouter
     {
         if (string.IsNullOrWhiteSpace(requestedName))
         {
-            await _provider.SendTextAsync(chat,
-                "Usage: /results <task-name>. See /tasks for the list.",
-                cancellationToken);
+            await PromptForShowTaskAsync(chat, cancellationToken);
             return;
         }
 
@@ -311,12 +339,104 @@ public sealed class MessageRouter
         await SendJobStatusAsync(chat, id, cancellationToken);
     }
 
+    private async Task HandleTaskDetailCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+        {
+            await _provider.SendTextAsync(chat,
+                "Usage: /task <name>. See /tasks for the list.", cancellationToken);
+            return;
+        }
+        var name = parts[1].Trim();
+
+        var task = _registry.Find(name);
+        if (task is null)
+        {
+            var disabled = _registry.DisabledTasks.FirstOrDefault(t =>
+                string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+            var hint = disabled is not null ? " (disabled — flip enabled:true to use)" : "";
+            await _provider.SendHtmlAsync(chat,
+                $"No task named <code>{HtmlEscape(name)}</code>{hint}.",
+                cancellationToken);
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("<b>").Append(HtmlEscape(task.Name)).AppendLine("</b>");
+        if (!string.IsNullOrWhiteSpace(task.Description))
+        {
+            sb.AppendLine(FormatDescription(task.Description));
+        }
+        sb.Append("Output: <code>").Append(task.Output.Type).Append("</code>");
+        if (task.IsLongRunning) sb.Append(" · long-running");
+        sb.AppendLine();
+
+        if (task.Parameters.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Parameters:");
+            foreach (var p in task.Parameters)
+            {
+                sb.Append("- <code>").Append(HtmlEscape(p.Name)).Append("</code> ")
+                  .Append('(').Append(HtmlEscape(p.Type))
+                  .Append(p.Required ? ", required" : ", optional").Append(')');
+                if (!string.IsNullOrWhiteSpace(p.Description))
+                {
+                    sb.Append(": ").Append(FormatDescription(p.Description));
+                }
+                sb.AppendLine();
+            }
+        }
+
+        await _provider.SendHtmlAsync(chat, sb.ToString(),
+            BuildTaskDetailKeyboard(task), cancellationToken);
+    }
+
+    /// <summary>
+    /// Per-task action keyboard for the /task drill-down view. One button per
+    /// applicable intent (see <see cref="IntentsFor"/>); each callback is the
+    /// equivalent slash command so taps go through the same dispatch as a
+    /// typed command — including the int-or-name forks on /stop and /restart.
+    /// </summary>
+    private static IReadOnlyList<IReadOnlyList<InlineButton>> BuildTaskDetailKeyboard(TaskDefinition task)
+    {
+        var rows = new List<IReadOnlyList<InlineButton>>();
+        foreach (var intent in IntentsFor(task))
+        {
+            var (label, callback) = intent switch
+            {
+                TaskIntent.Run     => ($"Run {task.Name}",     $"/run {task.Name}"),
+                TaskIntent.Show    => ($"Show {task.Name}",    $"/results {task.Name}"),
+                TaskIntent.Status  => ($"Jobs",                "/jobs"),
+                TaskIntent.Stop    => ($"Stop {task.Name}",    $"/stop {task.Name}"),
+                TaskIntent.Restart => ($"Restart {task.Name}", $"/restart {task.Name}"),
+                _ => (string.Empty, string.Empty)
+            };
+            if (label.Length > 0) rows.Add(new InlineButton[] { new(label, callback) });
+        }
+        return rows;
+    }
+
     private async Task HandleStopCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
     {
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        if (parts.Length < 2)
         {
-            await _provider.SendTextAsync(chat, "Usage: /stop <job-id>. See /jobs for IDs.", cancellationToken);
+            await _provider.SendTextAsync(chat,
+                "Usage: /stop <job-id> or /stop <task-name>. See /jobs for IDs.", cancellationToken);
+            return;
+        }
+
+        var arg = parts[1].Trim();
+
+        // Numeric arg → stop by job ID. Anything else falls back to looking up
+        // the active job for that task name (same lookup the NL Stop intent uses).
+        if (!int.TryParse(arg, out var id))
+        {
+            await HandleIntentStopAsync(chat,
+                new TaskMatch(arg, new Dictionary<string, object?>(), null),
+                cancellationToken);
             return;
         }
 
@@ -343,9 +463,23 @@ public sealed class MessageRouter
     private async Task HandleRestartCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
     {
         var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !int.TryParse(parts[1].Trim(), out var id))
+        if (parts.Length < 2)
         {
-            await _provider.SendTextAsync(chat, "Usage: /restart <job-id>. See /jobs for IDs.", cancellationToken);
+            await _provider.SendTextAsync(chat,
+                "Usage: /restart <job-id> or /restart <task-name>. See /jobs for IDs.", cancellationToken);
+            return;
+        }
+
+        var arg = parts[1].Trim();
+
+        // Same int-or-task-name fork as /stop: numeric arg restarts a specific
+        // job; anything else asks the intent helper to find the latest finished
+        // job for that task name.
+        if (!int.TryParse(arg, out var id))
+        {
+            await HandleIntentRestartAsync(chat,
+                new TaskMatch(arg, new Dictionary<string, object?>(), null),
+                cancellationToken);
             return;
         }
 
@@ -377,9 +511,7 @@ public sealed class MessageRouter
             return;
         }
         _jobs.AssignChat(newJob.Id, chat);
-        await _provider.SendHtmlAsync(chat,
-            $"-> Restarted job {id} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
-            cancellationToken);
+        await SendRestartConfirmationAsync(chat, id, newJob, cancellationToken);
     }
 
     private async Task HandleClearJobsCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
@@ -416,6 +548,8 @@ public sealed class MessageRouter
         var active = jobs.Where(j => !j.IsFinished).ToList();
         var finished = jobs.Where(j => j.IsFinished).Take(10).ToList();
 
+        var keyboard = new List<IReadOnlyList<InlineButton>>();
+
         if (active.Count > 0)
         {
             sb.AppendLine("<b>Active</b>:");
@@ -424,6 +558,11 @@ public sealed class MessageRouter
                 sb.Append("- /job ").Append(j.Id).Append(" - <code>")
                   .Append(HtmlEscape(j.TaskName)).Append("</code> running ")
                   .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+                keyboard.Add(new InlineButton[]
+                {
+                    new($"Job {j.Id}", $"/job {j.Id}"),
+                    new($"Stop {j.Id}", $"/stop {j.Id}")
+                });
             }
         }
         if (finished.Count > 0)
@@ -437,10 +576,16 @@ public sealed class MessageRouter
                   .Append(HtmlEscape(j.TaskName)).Append("</code> ")
                   .Append(HtmlEscape(exit)).Append(" after ")
                   .Append(HtmlEscape(FormatElapsed(j.Elapsed))).AppendLine();
+                keyboard.Add(new InlineButton[]
+                {
+                    new($"Job {j.Id}", $"/job {j.Id}"),
+                    new($"Restart {j.Id}", $"/restart {j.Id}")
+                });
             }
         }
 
-        await _provider.SendHtmlAsync(chat, sb.ToString(), cancellationToken);
+        await _provider.SendHtmlAsync(chat, sb.ToString(),
+            keyboard.Count > 0 ? keyboard : null, cancellationToken);
     }
 
     private async Task SendLatestJobStatusAsync(ChatId chat, CancellationToken cancellationToken)
@@ -483,7 +628,14 @@ public sealed class MessageRouter
                   .Append(" (pid ").Append(job.Pid).Append(")\n");
         }
         header.Append("log: <code>").Append(HtmlEscape(job.LogPath)).Append("</code>");
-        await _provider.SendHtmlAsync(chat, header.ToString(), cancellationToken);
+
+        IReadOnlyList<IReadOnlyList<InlineButton>>? headerButtons = job.IsFinished
+            ? (job.Task is { Command: { Length: > 0 } }
+                ? new[] { new InlineButton[] { new($"Restart {id}", $"/restart {id}") } }
+                : null)
+            : new[] { new InlineButton[] { new($"Stop {id}", $"/stop {id}") } };
+
+        await _provider.SendHtmlAsync(chat, header.ToString(), headerButtons, cancellationToken);
 
         var tail = _jobs.TailLog(id, 30);
         if (!string.IsNullOrWhiteSpace(tail))
@@ -610,6 +762,206 @@ public sealed class MessageRouter
         await _dispatcher.DispatchAsync(_provider, chat, result, cancellationToken);
     }
 
+    private async Task PromptForShowTaskAsync(ChatId chat, CancellationToken cancellationToken)
+    {
+        _conversation.BeginIntent(chat, TaskIntent.Show);
+
+        // Only tasks with a non-Text output have something /results can show
+        // without re-running. Text-output tasks would just say "no cached
+        // state" — better to keep them off the keyboard.
+        var showable = _registry.Tasks
+            .Where(t => t.Output.Type != TaskOutputType.Text)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.Append("Which task's results would you like to see? Tap one or send the name, or /cancel.");
+
+        IReadOnlyList<IReadOnlyList<InlineButton>>? keyboard = null;
+        if (showable.Count > 0)
+        {
+            // Callback uses the explicit /results form so a stale tap stays a
+            // Show action regardless of any pending state at the time.
+            var rows = new List<IReadOnlyList<InlineButton>>(showable.Count);
+            foreach (var t in showable)
+                rows.Add(new InlineButton[] { new(t.Name, $"/results {t.Name}") });
+            keyboard = rows;
+        }
+
+        await _provider.SendHtmlAsync(chat, sb.ToString(), keyboard, cancellationToken);
+    }
+
+    private async Task ResolvePendingIntentAsync(ChatId chat, PendingIntentState state, string answer,
+        CancellationToken cancellationToken)
+    {
+        var trimmed = answer.Trim();
+        switch (state.Intent)
+        {
+            case TaskIntent.Show:
+                await SendResultsAsync(chat, trimmed, cancellationToken);
+                return;
+            default:
+                await _provider.SendTextAsync(chat,
+                    "Lost track of what I was asking. Try again.", cancellationToken);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Final stage of TaskIntent.Run dispatch: validates required parameters
+    /// (kicking off conversational collection if anything's missing), runs
+    /// the task, and dispatches the result. Shared by the NL Run path and
+    /// the /run slash command (and by extension the per-task Run buttons,
+    /// whose callback is /run &lt;name&gt;).
+    /// </summary>
+    private async Task ExecuteRunAsync(ChatId chat, TaskDefinition task,
+        IReadOnlyDictionary<string, object?> parameters, string originalMessage,
+        CancellationToken cancellationToken)
+    {
+        var missingRequired = task.Parameters
+            .Where(p => p.Required &&
+                        !MissingValueGuard.HasUsableValue(p, parameters, originalMessage, task.Name))
+            .ToList();
+        if (missingRequired.Count > 0)
+        {
+            var state = _conversation.Begin(chat, task, parameters, missingRequired);
+            await _provider.SendHtmlAsync(chat,
+                $"-> <code>{HtmlEscape(task.Name)}</code> needs {missingRequired.Count} more value(s). " +
+                "Send each one in turn, or /cancel to abort.",
+                cancellationToken);
+            await PromptNextParameterAsync(chat, state, cancellationToken);
+            return;
+        }
+
+        await _provider.SendHtmlAsync(chat,
+            $"-> Running <code>{HtmlEscape(task.Name)}</code>{HtmlEscape(FormatParameterList(parameters))}",
+            cancellationToken);
+
+        var result = await _executor.ExecuteAsync(task, parameters, cancellationToken);
+        if (result.JobId is int newJobId)
+        {
+            _jobs.AssignChat(newJobId, chat);
+        }
+        await _dispatcher.DispatchAsync(_provider, chat, result, cancellationToken);
+    }
+
+    private async Task HandleRunCommandAsync(ChatId chat, string text, CancellationToken cancellationToken)
+    {
+        var space = text.IndexOf(' ');
+        var arg = space < 0 ? null : text[(space + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            await _provider.SendTextAsync(chat,
+                "Usage: /run <task-name>. See /tasks for the list.", cancellationToken);
+            return;
+        }
+
+        var task = _registry.Find(arg);
+        if (task is null)
+        {
+            await _provider.SendHtmlAsync(chat,
+                $"No task named <code>{HtmlEscape(arg)}</code>.",
+                cancellationToken);
+            return;
+        }
+
+        await ExecuteRunAsync(chat, task, new Dictionary<string, object?>(), arg, cancellationToken);
+    }
+
+    private async Task HandleIntentStopAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)
+    {
+        _jobs.Refresh();
+        var active = _jobs.List().Where(j => !j.IsFinished).ToList();
+        if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+        {
+            // Case-insensitive on task name to match _registry.Find lookup semantics —
+            // /stop Render and /stop render should reach the same active job.
+            active = active
+                .Where(j => string.Equals(j.TaskName, match.TaskName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        if (active.Count == 0)
+        {
+            await _provider.SendTextAsync(chat, "No active jobs to stop.", cancellationToken);
+            return;
+        }
+        if (active.Count > 1)
+        {
+            var ids = string.Join(", ", active.Select(j => $"/stop {j.Id}"));
+            await _provider.SendTextAsync(chat,
+                $"Multiple active jobs — use a specific command: {ids}", cancellationToken);
+            return;
+        }
+
+        var job = active[0];
+        var stopped = _jobs.Stop(job.Id);
+        await _provider.SendTextAsync(chat,
+            stopped
+                ? $"Sent kill to job {job.Id} ({job.TaskName}, pid {job.Pid})."
+                : $"Could not stop job {job.Id}. See logs.",
+            cancellationToken);
+    }
+
+    private async Task HandleIntentRestartAsync(ChatId chat, TaskMatch match, CancellationToken cancellationToken)
+    {
+        _jobs.Refresh();
+        var finished = _jobs.List()
+            .Where(j => j.IsFinished)
+            .OrderByDescending(j => j.StartedAtUtc)
+            .ToList();
+        if (!string.IsNullOrEmpty(match.TaskName) && !TaskMatcher.IsVirtualRoute(match.TaskName))
+        {
+            finished = finished
+                .Where(j => string.Equals(j.TaskName, match.TaskName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        var latest = finished.FirstOrDefault();
+        if (latest is null)
+        {
+            await _provider.SendTextAsync(chat, "No finished jobs to restart.", cancellationToken);
+            return;
+        }
+        if (latest.Task is null || string.IsNullOrWhiteSpace(latest.Task.Command))
+        {
+            await _provider.SendTextAsync(chat,
+                $"Job {latest.Id} has no stored task definition and cannot be restarted.",
+                cancellationToken);
+            return;
+        }
+
+        var newJob = _jobs.Restart(latest.Id);
+        if (newJob is null)
+        {
+            await _provider.SendTextAsync(chat, $"Could not restart job {latest.Id}.", cancellationToken);
+            return;
+        }
+        _jobs.AssignChat(newJob.Id, chat);
+        await SendRestartConfirmationAsync(chat, latest.Id, newJob, cancellationToken);
+    }
+
+    /// <summary>
+    /// Restart confirmation: identical wording for the slash and NL paths,
+    /// with [Job M] [Stop M] buttons on the new job so the user can tap
+    /// straight into the log tail / current output (or kill it if it was
+    /// the wrong button).
+    /// </summary>
+    private async Task SendRestartConfirmationAsync(ChatId chat, int oldId, JobRecord newJob,
+        CancellationToken cancellationToken)
+    {
+        var keyboard = new[]
+        {
+            new[]
+            {
+                new InlineButton($"Job {newJob.Id}",  $"/job {newJob.Id}"),
+                new InlineButton($"Stop {newJob.Id}", $"/stop {newJob.Id}")
+            }
+        };
+        await _provider.SendHtmlAsync(chat,
+            $"-> Restarted job {oldId} as job {newJob.Id}: <code>{HtmlEscape(newJob.TaskName)}</code>",
+            keyboard, cancellationToken);
+    }
+
     private static string FormatParameterList(IReadOnlyDictionary<string, object?> parameters)
     {
         if (parameters.Count == 0) return string.Empty;
@@ -659,35 +1011,45 @@ public sealed class MessageRouter
     private static string BuildHelp() =>
         "TeleTasks - chat in natural language to run pre-defined tasks.\n\n" +
         "Commands:\n" +
-        "  /tasks          - list configured (and disabled) tasks\n" +
-        "  /reload         - reload tasks.json\n" +
-        "  /dry <text>     - resolve a task and show what would run, without running it\n" +
-        "  /results <task> - show the latest output of <task> without running it\n" +
-        "  /jobs           - list active and recent long-running jobs\n" +
-        "  /job N          - status, log tail, and current output for job N\n" +
-        "  /stop N         - kill a running job\n" +
-        "  /restart N      - re-run a finished job with the same parameters\n" +
-        "  /clearjobs      - prune finished jobs per retention policy\n" +
-        "  /clearjobs all  - wipe all finished jobs (running jobs always kept)\n" +
-        "  /cancel         - abort a pending parameter-collection prompt\n" +
-        "  /whoami         - show your user/chat IDs\n" +
-        "  /help           - this message\n\n" +
+        "  /tasks                    - list tasks (with action buttons)\n" +
+        "  /task <name>              - per-task detail with Run / Show / Stop / Restart buttons\n" +
+        "  /run <name>               - run a task by name\n" +
+        "  /reload                   - reload tasks.json\n" +
+        "  /dry <text>               - resolve a task and show what would run, without running it\n" +
+        "  /results <task>           - show the latest output of <task> without running it\n" +
+        "  /jobs                     - list active and recent long-running jobs\n" +
+        "  /job N                    - status, log tail, and current output for job N\n" +
+        "  /stop <id|name>           - kill a running job (by id or by task name)\n" +
+        "  /restart <id|name>        - re-run a finished job (by id or by task name)\n" +
+        "  /clearjobs                - prune finished jobs per retention policy\n" +
+        "  /clearjobs all            - wipe all finished jobs (running jobs always kept)\n" +
+        "  /cancel                   - abort a pending prompt\n" +
+        "  /whoami                   - show your user/chat IDs\n" +
+        "  /help                     - this message\n\n" +
+        "Most lists include tap-to-act buttons - use them instead of typing the slash form.\n" +
         "If a task needs values you didn't supply, I'll ask for them one at a time.\n" +
         "Anything else is sent to the local LLM for matching.";
 
+    /// <summary>
+    /// Renders the /tasks list as Telegram HTML. Task names are wrapped in
+    /// <c>&lt;code&gt;</c> for monospace; backtick-quoted spans inside
+    /// descriptions (e.g. "Run `run.sh`") are converted to <c>&lt;code&gt;</c>
+    /// after HTML-escaping the rest of the description text.
+    /// </summary>
     private string BuildTaskList()
     {
         if (_registry.Tasks.Count == 0 && _registry.DisabledTasks.Count == 0)
             return "No tasks configured.";
 
         var sb = new StringBuilder();
-        sb.AppendLine("Available tasks:");
+        sb.AppendLine("<b>Available tasks</b>:");
         foreach (var t in _registry.Tasks)
         {
-            sb.Append("- ").Append(t.Name);
+            sb.Append("- <code>").Append(HtmlEscape(t.Name)).Append("</code>");
+            sb.Append(" [").Append(string.Join(" · ", IntentsFor(t))).Append(']');
             if (!string.IsNullOrWhiteSpace(t.Description))
             {
-                sb.Append(" - ").Append(t.Description);
+                sb.Append(" - ").Append(FormatDescription(t.Description));
             }
             sb.AppendLine();
         }
@@ -695,13 +1057,70 @@ public sealed class MessageRouter
         if (_registry.DisabledTasks.Count > 0)
         {
             sb.AppendLine();
-            sb.Append("Disabled (").Append(_registry.DisabledTasks.Count).AppendLine("):");
+            sb.Append("<b>Disabled</b> (").Append(_registry.DisabledTasks.Count).AppendLine("):");
             foreach (var t in _registry.DisabledTasks)
             {
-                sb.Append("- ").Append(t.Name).AppendLine();
+                sb.Append("- <code>").Append(HtmlEscape(t.Name)).AppendLine("</code>");
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Each enabled task gets a row of two buttons: the task name (callback =
+    /// /run &lt;name&gt;, which dispatches through the same path as a typed
+    /// /run including conversational parameter collection) and a "More" button
+    /// that fires /task &lt;name&gt; for the per-task drill-down. The slash-
+    /// command callback shape is intentional — bare task names would be
+    /// consumed by a pending Show-intent followup as the answer to "which
+    /// task?", routing a tap-to-run as a Show by accident.
+    /// </summary>
+    private IReadOnlyList<IReadOnlyList<InlineButton>>? BuildTaskKeyboard()
+    {
+        if (_registry.Tasks.Count == 0) return null;
+        var rows = new List<IReadOnlyList<InlineButton>>(_registry.Tasks.Count);
+        foreach (var t in _registry.Tasks)
+        {
+            rows.Add(new InlineButton[]
+            {
+                new(t.Name, $"/run {t.Name}"),
+                new("More", $"/task {t.Name}")
+            });
+        }
+        return rows;
+    }
+
+    private static readonly Regex BacktickSpan = new(@"`([^`]+)`", RegexOptions.Compiled);
+
+    /// <summary>
+    /// HTML-escapes the description, then converts backtick-quoted spans
+    /// (Markdown-style inline code) to <c>&lt;code&gt;</c>. Order matters —
+    /// escape first, otherwise <c>&lt;</c>/<c>&gt;</c> inside backticks would
+    /// be passed through as live HTML.
+    /// </summary>
+    internal static string FormatDescription(string description) =>
+        BacktickSpan.Replace(HtmlEscape(description), "<code>$1</code>");
+
+    /// <summary>
+    /// Per-task intents inferred from the task's shape:
+    ///   Run       — always (any enabled task can be executed)
+    ///   Show      — when the task produces a non-Text artifact (file / images / log tail)
+    ///   Status    — long-running only (only those become tracked jobs)
+    ///   Stop      — long-running only (you can only kill what's tracked)
+    ///   Restart   — long-running only (JobTracker only persists long-running runs)
+    /// Cancel and Help are not task-scoped, so they never appear here.
+    /// </summary>
+    internal static IReadOnlyList<TaskIntent> IntentsFor(TaskDefinition task)
+    {
+        var intents = new List<TaskIntent> { TaskIntent.Run };
+        if (task.Output.Type != TaskOutputType.Text) intents.Add(TaskIntent.Show);
+        if (task.IsLongRunning)
+        {
+            intents.Add(TaskIntent.Status);
+            intents.Add(TaskIntent.Stop);
+            intents.Add(TaskIntent.Restart);
+        }
+        return intents;
     }
 
     internal static string HtmlEscape(string input) =>
